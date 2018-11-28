@@ -1,16 +1,21 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package networkserver
 
 import (
 	"sort"
 
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
 )
+
+const macCMD = "cmd" // For Tracing
 
 type bySNR []*pb_gateway.RxMetadata
 
 func (a bySNR) Len() int           { return len(a) }
 func (a bySNR) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a bySNR) Less(i, j int) bool { return a[i].Snr < a[j].Snr }
+func (a bySNR) Less(i, j int) bool { return a[i].SNR < a[j].SNR }
 
 func bestSNR(metadata []*pb_gateway.RxMetadata) float32 {
 	if len(metadata) == 0 {
@@ -18,7 +23,7 @@ func bestSNR(metadata []*pb_gateway.RxMetadata) float32 {
 	}
 	sorted := bySNR(metadata)
 	sort.Sort(sorted)
-	return sorted[len(sorted)-1].Snr
+	return sorted[len(sorted)-1].SNR
 }
 
 var demodulationFloor = map[string]float32{

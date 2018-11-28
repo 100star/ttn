@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package mqtt
@@ -21,7 +21,7 @@ func (c *DefaultClient) PublishDownlink(dataDown types.DownlinkMessage) Token {
 	dataDown.DevID = ""
 	msg, err := json.Marshal(dataDown)
 	if err != nil {
-		return &simpleToken{fmt.Errorf("Unable to marshal the message payload")}
+		return &simpleToken{fmt.Errorf("Unable to marshal the message payload: %s", err)}
 	}
 	return c.publish(topic.String(), msg)
 }
@@ -33,7 +33,7 @@ func (c *DefaultClient) SubscribeDeviceDownlink(appID string, devID string, hand
 		// Determine the actual topic
 		topic, err := ParseDeviceTopic(msg.Topic())
 		if err != nil {
-			c.ctx.Warnf("Received message on invalid downlink topic: %s", msg.Topic())
+			c.ctx.Warnf("mqtt: received message on invalid downlink topic: %s", msg.Topic())
 			return
 		}
 
@@ -41,7 +41,7 @@ func (c *DefaultClient) SubscribeDeviceDownlink(appID string, devID string, hand
 		dataDown := &types.DownlinkMessage{}
 		err = json.Unmarshal(msg.Payload(), dataDown)
 		if err != nil {
-			c.ctx.Warnf("Could not unmarshal downlink (%s).", err.Error())
+			c.ctx.Warnf("mqtt: could not unmarshal downlink: %s", err)
 			return
 		}
 		dataDown.AppID = topic.AppID

@@ -1,12 +1,13 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
 
 import (
 	"encoding/json"
+	"strings"
 
-	"github.com/TheThingsNetwork/ttn/api"
+	"github.com/TheThingsNetwork/api"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/ttnctl/util"
 	"github.com/spf13/cobra"
@@ -27,40 +28,45 @@ $ ttnctl downlink test --json '{"led":"on"}'
   INFO Enqueued downlink                        AppID=test DevID=test
 `,
 	Run: func(cmd *cobra.Command, args []string) {
-		client := util.GetMQTT(ctx)
-		defer client.Disconnect()
-
-		if len(args) < 2 {
-			ctx.Info("Not enough arguments. Please, provide a devId and a Payload")
-			cmd.UsageFunc()(cmd)
-			return
-		}
+		assertArgsLength(cmd, args, 2, 2)
 
 		appID := util.GetAppID(ctx)
 		ctx = ctx.WithField("AppID", appID)
 
-		devID := args[0]
-		if !api.ValidID(devID) {
-			ctx.Fatalf("Invalid Device ID") // TODO: Add link to wiki explaining device IDs
+		devID := strings.ToLower(args[0])
+		if err := api.NotEmptyAndValidID(devID, "Device ID"); err != nil {
+			ctx.Fatal(err.Error())
 		}
 		ctx = ctx.WithField("DevID", devID)
 
 		jsonflag, err := cmd.Flags().GetBool("json")
-
 		if err != nil {
 			ctx.WithError(err).Fatal("Failed to read json flag")
 		}
 
 		fPort, err := cmd.Flags().GetInt("fport")
-
 		if err != nil {
 			ctx.WithError(err).Fatal("Failed to read fport flag")
 		}
 
+		confirmed, err := cmd.Flags().GetBool("confirmed")
+		if err != nil {
+			ctx.WithError(err).Fatal("Failed to read confirmed flag")
+		}
+
+		accessKey, err := cmd.Flags().GetString("access-key")
+		if err != nil {
+			ctx.WithError(err).Fatal("Failed to read access-key flag")
+		}
+
+		client := util.GetMQTT(ctx, accessKey)
+		defer client.Disconnect()
+
 		message := types.DownlinkMessage{
-			AppID: appID,
-			DevID: devID,
-			FPort: uint8(fPort),
+			AppID:     appID,
+			DevID:     devID,
+			FPort:     uint8(fPort),
+			Confirmed: confirmed,
 		}
 
 		if args[1] == "" {
@@ -102,5 +108,7 @@ $ ttnctl downlink test --json '{"led":"on"}'
 func init() {
 	RootCmd.AddCommand(downlinkCmd)
 	downlinkCmd.Flags().Int("fport", 1, "FPort for downlink")
+	downlinkCmd.Flags().Bool("confirmed", false, "Confirmed downlink")
 	downlinkCmd.Flags().Bool("json", false, "Provide the payload as JSON")
+	downlinkCmd.Flags().String("access-key", "", "The access key to use")
 }

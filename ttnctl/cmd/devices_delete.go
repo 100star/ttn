@@ -1,14 +1,15 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/TheThingsNetwork/ttn/api"
+	"github.com/TheThingsNetwork/api"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/ttnctl/util"
-	"github.com/apex/log"
 	"github.com/spf13/cobra"
 )
 
@@ -25,15 +26,11 @@ Are you sure you want to delete device test from application test?
   INFO Deleted device                           AppID=test DevID=test
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		assertArgsLength(cmd, args, 1, 1)
 
-		if len(args) == 0 {
-			cmd.UsageFunc()(cmd)
-			return
-		}
-
-		devID := args[0]
-		if !api.ValidID(devID) {
-			ctx.Fatalf("Invalid Device ID") // TODO: Add link to wiki explaining device IDs
+		devID := strings.ToLower(args[0])
+		if err := api.NotEmptyAndValidID(devID, "Device ID"); err != nil {
+			ctx.Fatal(err.Error())
 		}
 
 		appID := util.GetAppID(ctx)
@@ -51,7 +48,7 @@ Are you sure you want to delete device test from application test?
 			ctx.WithError(err).Fatal("Could not delete device.")
 		}
 
-		ctx.WithFields(log.Fields{
+		ctx.WithFields(ttnlog.Fields{
 			"AppID": appID,
 			"DevID": devID,
 		}).Info("Deleted device")

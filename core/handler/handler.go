@@ -1,22 +1,23 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package handler
 
 import (
 	"fmt"
-	"time"
 
+	pb_broker "github.com/TheThingsNetwork/api/broker"
+	"github.com/TheThingsNetwork/api/broker/brokerclient"
+	pb "github.com/TheThingsNetwork/api/handler"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	"github.com/TheThingsNetwork/go-utils/grpc/auth"
 	"github.com/TheThingsNetwork/ttn/amqp"
-	"github.com/TheThingsNetwork/ttn/api"
-	pb_broker "github.com/TheThingsNetwork/ttn/api/broker"
-	pb "github.com/TheThingsNetwork/ttn/api/handler"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/handler/application"
 	"github.com/TheThingsNetwork/ttn/core/handler/device"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/mqtt"
-	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"google.golang.org/grpc"
 	"gopkg.in/redis.v5"
 )
@@ -28,6 +29,7 @@ type Handler interface {
 
 	WithMQTT(username, password string, brokers ...string) Handler
 	WithAMQP(username, password, host, exchange string) Handler
+	WithDeviceAttributes(attribute ...string) Handler
 
 	HandleUplink(uplink *pb_broker.DeduplicatedUplinkMessage) error
 	HandleActivationChallenge(challenge *pb_broker.ActivationChallengeRequest) (*pb_broker.ActivationChallengeResponse, error)
@@ -41,6 +43,8 @@ func NewRedisHandler(client *redis.Client, ttnBrokerID string) Handler {
 		devices:      device.NewRedisDeviceStore(client, "handler"),
 		applications: application.NewRedisApplicationStore(client, "handler"),
 		ttnBrokerID:  ttnBrokerID,
+		qUp:          make(chan *types.UplinkMessage),
+		qEvent:       make(chan *types.DeviceEvent),
 	}
 }
 
@@ -54,6 +58,7 @@ type handler struct {
 	ttnBrokerConn    *grpc.ClientConn
 	ttnBroker        pb_broker.BrokerClient
 	ttnBrokerManager pb_broker.BrokerManagerClient
+	ttnDeviceManager pb_lorawan.DeviceManagerClient
 
 	downlink chan *pb_broker.DownlinkMessage
 
@@ -72,6 +77,13 @@ type handler struct {
 	amqpExchange string
 	amqpEnabled  bool
 	amqpUp       chan *types.UplinkMessage
+	amqpEvent    chan *types.DeviceEvent
+
+	qUp    chan *types.UplinkMessage
+	qEvent chan *types.DeviceEvent
+
+	status        *status
+	monitorStream monitorclient.Stream
 }
 
 var (
@@ -96,8 +108,14 @@ func (h *handler) WithAMQP(username, password, host, exchange string) Handler {
 	return h
 }
 
+func (h *handler) WithDeviceAttributes(a ...string) Handler {
+	h.devices.AddBuiltinAttribute(a...)
+	return h
+}
+
 func (h *handler) Init(c *component.Component) error {
 	h.Component = c
+	h.InitStatus()
 	err := h.Component.UpdateTokenKey()
 	if err != nil {
 		return err
@@ -126,12 +144,36 @@ func (h *handler) Init(c *component.Component) error {
 		}
 	}
 
+	go func() {
+		for {
+			select {
+			case up := <-h.qUp:
+				if h.mqttEnabled {
+					h.mqttUp <- up
+				}
+				if h.amqpEnabled {
+					h.amqpUp <- up
+				}
+			case event := <-h.qEvent:
+				if h.mqttEnabled {
+					h.mqttEvent <- event
+				}
+				if h.amqpEnabled {
+					h.amqpEvent <- event
+				}
+			}
+		}
+	}()
+
 	err = h.associateBroker()
 	if err != nil {
 		return err
 	}
 
 	h.Component.SetStatus(component.StatusHealthy)
+	if h.Component.Monitor != nil {
+		h.monitorStream = h.Component.Monitor.HandlerClient(h.Context, grpc.PerRPCCredentials(auth.WithStaticToken(h.AccessToken)))
+	}
 
 	return nil
 }
@@ -150,48 +192,31 @@ func (h *handler) associateBroker() error {
 	if err != nil {
 		return err
 	}
-	conn, err := broker.Dial()
+	conn, err := broker.Dial(h.Pool)
 	if err != nil {
 		return err
 	}
 	h.ttnBrokerConn = conn
 	h.ttnBroker = pb_broker.NewBrokerClient(conn)
 	h.ttnBrokerManager = pb_broker.NewBrokerManagerClient(conn)
+	h.ttnDeviceManager = pb_lorawan.NewDeviceManagerClient(conn)
 
 	h.downlink = make(chan *pb_broker.DownlinkMessage)
 
-	go func() {
-		for {
-			upStream, err := h.ttnBroker.Subscribe(h.GetContext(""), &pb_broker.SubscribeRequest{})
-			if err != nil {
-				h.Ctx.WithError(errors.FromGRPCError(err)).Error("Could not start Broker subscribe stream")
-				<-time.After(api.Backoff)
-				continue
-			}
-			for {
-				in, err := upStream.Recv()
-				if err != nil {
-					h.Ctx.WithError(errors.FromGRPCError(err)).Error("Error in Broker subscribe stream")
-					break
-				}
-				go h.HandleUplink(in)
-			}
-		}
-	}()
+	config := brokerclient.DefaultClientConfig
+	config.BackgroundContext = h.Component.Context
+	cli := brokerclient.NewClient(config)
+	cli.AddServer(h.ttnBrokerID, h.ttnBrokerConn)
+	association := cli.NewHandlerStreams(h.Identity.ID, "")
 
 	go func() {
 		for {
-			downStream, err := h.ttnBroker.Publish(h.GetContext(""))
-			if err != nil {
-				h.Ctx.WithError(errors.FromGRPCError(err)).Error("Could not start Broker publish stream")
-				<-time.After(api.Backoff)
-				continue
-			}
-			for downlink := range h.downlink {
-				err := downStream.Send(downlink)
-				if err != nil {
-					h.Ctx.WithError(errors.FromGRPCError(err)).Error("Error in Broker publish stream")
-					break
+			select {
+			case message := <-h.downlink:
+				association.Downlink(message)
+			case message, ok := <-association.Uplink():
+				if ok {
+					go h.HandleUplink(message)
 				}
 			}
 		}

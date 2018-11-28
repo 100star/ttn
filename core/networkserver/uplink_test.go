@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package networkserver
@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
-	pb_broker "github.com/TheThingsNetwork/ttn/api/broker"
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
-	pb_protocol "github.com/TheThingsNetwork/ttn/api/protocol"
-	pb_lorawan "github.com/TheThingsNetwork/ttn/api/protocol/lorawan"
+	pb_broker "github.com/TheThingsNetwork/api/broker"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
+	pb_protocol "github.com/TheThingsNetwork/api/protocol"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/networkserver/device"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	. "github.com/TheThingsNetwork/ttn/utils/testing"
@@ -21,8 +22,12 @@ import (
 func TestHandleUplink(t *testing.T) {
 	a := New(t)
 	ns := &networkServer{
+		Component: &component.Component{
+			Ctx: GetLogger(t, "TestHandleUplink"),
+		},
 		devices: device.NewRedisDeviceStore(GetRedisClient(), "ns-test-handle-uplink"),
 	}
+	ns.InitStatus()
 
 	appEUI := types.AppEUI(getEUI(1, 2, 3, 4, 5, 6, 7, 8))
 	devEUI := types.DevEUI(getEUI(1, 2, 3, 4, 5, 6, 7, 8))
@@ -30,8 +35,8 @@ func TestHandleUplink(t *testing.T) {
 
 	// Device Not Found
 	message := &pb_broker.DeduplicatedUplinkMessage{
-		AppEui:  &appEUI,
-		DevEui:  &devEUI,
+		AppEUI:  &appEUI,
+		DevEUI:  &devEUI,
 		Payload: []byte{},
 	}
 	_, err := ns.HandleUplink(message)
@@ -44,12 +49,14 @@ func TestHandleUplink(t *testing.T) {
 	})
 	defer func() {
 		ns.devices.Delete(appEUI, devEUI)
+		frames, _ := ns.devices.Frames(appEUI, devEUI)
+		frames.Clear()
 	}()
 
 	// Invalid Payload
 	message = &pb_broker.DeduplicatedUplinkMessage{
-		AppEui:  &appEUI,
-		DevEui:  &devEUI,
+		AppEUI:  &appEUI,
+		DevEUI:  &devEUI,
 		Payload: []byte{},
 	}
 	_, err = ns.HandleUplink(message)
@@ -78,15 +85,15 @@ func TestHandleUplink(t *testing.T) {
 
 	// Valid Uplink
 	message = &pb_broker.DeduplicatedUplinkMessage{
-		AppEui:           &appEUI,
-		DevEui:           &devEUI,
+		AppEUI:           &appEUI,
+		DevEUI:           &devEUI,
 		Payload:          bytes,
-		ResponseTemplate: &pb_broker.DownlinkMessage{},
+		ResponseTemplate: &pb_broker.DownlinkMessage{DownlinkOption: &pb_broker.DownlinkOption{}},
 		GatewayMetadata: []*pb_gateway.RxMetadata{
 			&pb_gateway.RxMetadata{},
 		},
-		ProtocolMetadata: &pb_protocol.RxMetadata{Protocol: &pb_protocol.RxMetadata_Lorawan{
-			Lorawan: &pb_lorawan.Metadata{
+		ProtocolMetadata: pb_protocol.RxMetadata{Protocol: &pb_protocol.RxMetadata_LoRaWAN{
+			LoRaWAN: &pb_lorawan.Metadata{
 				DataRate: "SF7BW125",
 			},
 		}},

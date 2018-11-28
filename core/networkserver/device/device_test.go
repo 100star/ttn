@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package device
@@ -25,7 +25,10 @@ func TestDeviceChangedFields(t *testing.T) {
 	}
 	device.StartUpdate()
 	device.DevID = "NewDevID"
+	device.Options.DisableFCntCheck = true
 
-	a.So(device.ChangedFields(), ShouldHaveLength, 1)
+	a.So(device.ChangedFields(), ShouldHaveLength, 3)
 	a.So(device.ChangedFields(), ShouldContain, "DevID")
+	a.So(device.ChangedFields(), ShouldContain, "Options")
+	a.So(device.ChangedFields(), ShouldContain, "Options.DisableFCntCheck")
 }

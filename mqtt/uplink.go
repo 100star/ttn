@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package mqtt
@@ -17,11 +17,9 @@ type UplinkHandler func(client Client, appID string, devID string, req types.Upl
 // PublishUplink publishes an uplink message to the MQTT broker
 func (c *DefaultClient) PublishUplink(dataUp types.UplinkMessage) Token {
 	topic := DeviceTopic{dataUp.AppID, dataUp.DevID, DeviceUplink, ""}
-	dataUp.AppID = ""
-	dataUp.DevID = ""
 	msg, err := json.Marshal(dataUp)
 	if err != nil {
-		return &simpleToken{fmt.Errorf("Unable to marshal the message payload")}
+		return &simpleToken{fmt.Errorf("Unable to marshal the message payload: %s", err)}
 	}
 	return c.publish(topic.String(), msg)
 }
@@ -42,7 +40,7 @@ func (c *DefaultClient) PublishUplinkFields(appID string, devID string, fields m
 		for _, token := range tokens {
 			token.Wait()
 			if token.Error() != nil {
-				fmt.Println(token.Error())
+				c.ctx.Warnf("mqtt: error publishing uplink fields: %s", token.Error())
 				t.err = token.Error()
 			}
 		}
@@ -71,7 +69,7 @@ func (c *DefaultClient) SubscribeDeviceUplink(appID string, devID string, handle
 		// Determine the actual topic
 		topic, err := ParseDeviceTopic(msg.Topic())
 		if err != nil {
-			c.ctx.Warnf("Received message on invalid uplink topic: %s", msg.Topic())
+			c.ctx.Warnf("mqtt: received message on invalid uplink topic: %s", msg.Topic())
 			return
 		}
 
@@ -82,7 +80,7 @@ func (c *DefaultClient) SubscribeDeviceUplink(appID string, devID string, handle
 		dataUp.DevID = topic.DevID
 
 		if err != nil {
-			c.ctx.Warnf("Could not unmarshal uplink (%s).", err.Error())
+			c.ctx.Warnf("mqtt: could not unmarshal uplink: %s", err)
 			return
 		}
 

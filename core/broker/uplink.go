@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package broker
@@ -10,50 +10,74 @@ import (
 	"sort"
 	"time"
 
-	pb "github.com/TheThingsNetwork/ttn/api/broker"
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
-	"github.com/TheThingsNetwork/ttn/api/gateway"
-	"github.com/TheThingsNetwork/ttn/api/networkserver"
-	pb_lorawan "github.com/TheThingsNetwork/ttn/api/protocol/lorawan"
+	pb "github.com/TheThingsNetwork/api/broker"
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
+	"github.com/TheThingsNetwork/api/logfields"
+	"github.com/TheThingsNetwork/api/networkserver"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	"github.com/TheThingsNetwork/api/trace"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"github.com/TheThingsNetwork/ttn/utils/fcnt"
-	"github.com/apex/log"
 	"github.com/brocaar/lorawan"
 )
 
 const maxFCntGap = 16384
 
 func (b *broker) HandleUplink(uplink *pb.UplinkMessage) (err error) {
-	ctx := b.Ctx.WithField("GatewayID", uplink.GatewayMetadata.GatewayId)
+	ctx := b.Ctx.WithFields(logfields.ForMessage(uplink))
 	start := time.Now()
+	deduplicatedUplink := new(pb.DeduplicatedUplinkMessage)
+	deduplicatedUplink.ServerTime = start.UnixNano()
+
+	b.RegisterReceived(uplink)
 	defer func() {
 		if err != nil {
+			if deduplicatedUplink != nil {
+				deduplicatedUplink.Trace = deduplicatedUplink.Trace.WithEvent(trace.DropEvent, "reason", err)
+			}
 			ctx.WithError(err).Warn("Could not handle uplink")
 		} else {
+			b.RegisterHandled(uplink)
 			ctx.WithField("Duration", time.Now().Sub(start)).Info("Handled uplink")
+		}
+		if deduplicatedUplink != nil && b.monitorStream != nil {
+			b.monitorStream.Send(deduplicatedUplink)
 		}
 	}()
 
-	time := time.Now()
+	b.status.uplink.Mark(1)
+
+	uplink.Trace = uplink.Trace.WithEvent(trace.ReceiveEvent)
 
 	// De-duplicate uplink messages
 	duplicates := b.deduplicateUplink(uplink)
 	if len(duplicates) == 0 {
 		return nil
 	}
-
 	ctx = ctx.WithField("Duplicates", len(duplicates))
 
-	base := duplicates[0]
+	b.status.uplinkUnique.Mark(1)
 
-	if base.ProtocolMetadata.GetLorawan() == nil {
+	deduplicatedUplink.Payload = duplicates[0].Payload
+	deduplicatedUplink.ProtocolMetadata = duplicates[0].ProtocolMetadata
+	deduplicatedUplink.Trace = deduplicatedUplink.Trace.WithEvent(trace.DeduplicateEvent,
+		"duplicates", len(duplicates),
+	)
+	for _, duplicate := range duplicates {
+		if duplicate.Trace != nil {
+			deduplicatedUplink.Trace.Parents = append(deduplicatedUplink.Trace.Parents, duplicate.Trace)
+		}
+	}
+
+	if deduplicatedUplink.ProtocolMetadata.GetLoRaWAN() == nil {
 		return errors.NewErrInvalidArgument("Uplink", "does not contain LoRaWAN metadata")
 	}
 
 	// LoRaWAN: Unmarshal
 	var phyPayload lorawan.PHYPayload
-	err = phyPayload.UnmarshalBinary(base.Payload)
+	err = phyPayload.UnmarshalBinary(deduplicatedUplink.Payload)
 	if err != nil {
 		return err
 	}
@@ -64,22 +88,27 @@ func (b *broker) HandleUplink(uplink *pb.UplinkMessage) (err error) {
 
 	// Request devices from NS
 	devAddr := types.DevAddr(macPayload.FHDR.DevAddr)
-	ctx = ctx.WithFields(log.Fields{
+	ctx = ctx.WithFields(ttnlog.Fields{
 		"DevAddr": devAddr,
 		"FCnt":    macPayload.FHDR.FCnt,
 	})
 	var getDevicesResp *networkserver.DevicesResponse
 	getDevicesResp, err = b.ns.GetDevices(b.Component.GetContext(b.nsToken), &networkserver.DevicesRequest{
-		DevAddr: &devAddr,
+		DevAddr: devAddr,
 		FCnt:    macPayload.FHDR.FCnt,
 	})
 	if err != nil {
-		return errors.BuildGRPCError(errors.Wrap(errors.FromGRPCError(err), "NetworkServer did not return devices"))
+		return errors.Wrap(errors.FromGRPCError(err), "NetworkServer did not return devices")
 	}
+	b.status.deduplication.Update(int64(len(getDevicesResp.Results)))
+	duplicatesHistogram.Observe(float64(len(getDevicesResp.Results)))
 	if len(getDevicesResp.Results) == 0 {
 		return errors.NewErrNotFound(fmt.Sprintf("Device with DevAddr %s and FCnt <= %d", devAddr, macPayload.FHDR.FCnt))
 	}
 	ctx = ctx.WithField("DevAddrResults", len(getDevicesResp.Results))
+	deduplicatedUplink.Trace = deduplicatedUplink.Trace.WithEvent("got devices from networkserver",
+		"devices", len(getDevicesResp.Results),
+	)
 
 	// Sort by FCntUp to optimize the number of MIC checks
 	sort.Sort(ByFCntUp(getDevicesResp.Results))
@@ -87,7 +116,7 @@ func (b *broker) HandleUplink(uplink *pb.UplinkMessage) (err error) {
 	// Find AppEUI/DevEUI through MIC check
 	var device *pb_lorawan.Device
 	var micChecks int
-	var originalFCnt uint32
+	originalFCnt := macPayload.FHDR.FCnt
 	for _, candidate := range getDevicesResp.Results {
 		nwkSKey := lorawan.AES128Key(*candidate.NwkSKey)
 
@@ -102,11 +131,10 @@ func (b *broker) HandleUplink(uplink *pb.UplinkMessage) (err error) {
 			break
 		}
 
-		originalFCnt = macPayload.FHDR.FCnt
-		if candidate.Uses32BitFCnt {
-			macPayload.FHDR.FCnt = fcnt.GetFull(candidate.FCntUp, uint16(originalFCnt))
+		if fullFCnt := fcnt.GetFull(candidate.FCntUp, uint16(originalFCnt)); fullFCnt != originalFCnt && candidate.Uses32BitFCnt {
+			macPayload.FHDR.FCnt = fullFCnt
 
-			// If 32 bit counter has different value, perform another MIC check
+			// Then check again with the 32 bit counter
 			if macPayload.FHDR.FCnt != originalFCnt {
 				micChecks++
 				ok, err = phyPayload.ValidateMIC(nwkSKey)
@@ -118,90 +146,102 @@ func (b *broker) HandleUplink(uplink *pb.UplinkMessage) (err error) {
 					break
 				}
 			}
-		}
 
+			macPayload.FHDR.FCnt = originalFCnt
+		}
+	}
+	if device == nil {
 		return errors.NewErrNotFound("device that validates MIC")
 	}
-	ctx = ctx.WithFields(log.Fields{
+
+	micChecksHistogram.Observe(float64(micChecks))
+
+	ctx = ctx.WithFields(ttnlog.Fields{
 		"MICChecks": micChecks,
-		"DevEUI":    device.DevEui,
-		"AppEUI":    device.AppEui,
-		"AppID":     device.AppId,
-		"DevID":     device.DevId,
+		"DevEUI":    device.DevEUI,
+		"AppEUI":    device.AppEUI,
+		"AppID":     device.AppID,
+		"DevID":     device.DevID,
 		"FCnt":      originalFCnt,
 	})
+	deduplicatedUplink.DevEUI = &device.DevEUI
+	deduplicatedUplink.AppEUI = &device.AppEUI
+	deduplicatedUplink.AppID = device.AppID
+	deduplicatedUplink.DevID = device.DevID
+	deduplicatedUplink.Trace = deduplicatedUplink.Trace.WithEvent(trace.CheckMICEvent, "mic checks", micChecks)
 	if macPayload.FHDR.FCnt != originalFCnt {
 		ctx = ctx.WithField("RealFCnt", macPayload.FHDR.FCnt)
 	}
 
-	if device.DisableFCntCheck {
-		// TODO: Add warning to message?
-	} else if device.FCntUp == 0 {
-
-	} else if macPayload.FHDR.FCnt <= device.FCntUp || macPayload.FHDR.FCnt-device.FCntUp > maxFCntGap {
-		// Replay attack or FCnt gap too big
-		return errors.NewErrNotFound("device with matching FCnt")
+	switch {
+	case macPayload.FHDR.FCnt > device.FCntUp && macPayload.FHDR.FCnt-device.FCntUp <= maxFCntGap:
+		// FCnt higher than latest and within max FCnt gap (normal case)
+	case device.DisableFCntCheck:
+		// FCnt Check disabled. Rely on MIC check only
+	case device.FCntUp == 0:
+		// FCntUp is reset. We don't know where the device will start sending.
+	case macPayload.FHDR.FCnt == device.FCntUp:
+		if phyPayload.MHDR.MType == lorawan.ConfirmedDataUp {
+			// Retry of confirmed uplink
+			break
+		}
+		fallthrough
+	case macPayload.FHDR.FCnt <= device.FCntUp:
+		return errors.NewErrInvalidArgument("FCnt", "not high enough")
+	case macPayload.FHDR.FCnt-device.FCntUp > maxFCntGap:
+		return errors.NewErrInvalidArgument("FCnt", "too high")
+	default:
+		return errors.NewErrInternal("FCnt check failed")
 	}
 
 	// Add FCnt to Metadata (because it's not marshaled in lorawan payload)
-	base.ProtocolMetadata.GetLorawan().FCnt = macPayload.FHDR.FCnt
+	deduplicatedUplink.ProtocolMetadata.GetLoRaWAN().FCnt = macPayload.FHDR.FCnt
 
 	// Collect GatewayMetadata and DownlinkOptions
-	var gatewayMetadata []*gateway.RxMetadata
 	var downlinkOptions []*pb.DownlinkOption
-	var downlinkMessage *pb.DownlinkMessage
 	for _, duplicate := range duplicates {
-		gatewayMetadata = append(gatewayMetadata, duplicate.GatewayMetadata)
+		deduplicatedUplink.GatewayMetadata = append(deduplicatedUplink.GatewayMetadata, &duplicate.GatewayMetadata)
 		downlinkOptions = append(downlinkOptions, duplicate.DownlinkOptions...)
 	}
 
 	// Select best DownlinkOption
 	if len(downlinkOptions) > 0 {
-		downlinkMessage = &pb.DownlinkMessage{
-			DevEui:         device.DevEui,
-			AppEui:         device.AppEui,
-			AppId:          device.AppId,
-			DevId:          device.DevId,
+		deduplicatedUplink.ResponseTemplate = &pb.DownlinkMessage{
+			DevEUI:         device.DevEUI,
+			AppEUI:         device.AppEUI,
+			AppID:          device.AppID,
+			DevID:          device.DevID,
 			DownlinkOption: selectBestDownlink(downlinkOptions),
 		}
-	}
-
-	// Build Uplink
-	deduplicatedUplink := &pb.DeduplicatedUplinkMessage{
-		Payload:          base.Payload,
-		DevEui:           device.DevEui,
-		DevId:            device.DevId,
-		AppEui:           device.AppEui,
-		AppId:            device.AppId,
-		ProtocolMetadata: base.ProtocolMetadata,
-		GatewayMetadata:  gatewayMetadata,
-		ServerTime:       time.UnixNano(),
-		ResponseTemplate: downlinkMessage,
 	}
 
 	// Pass Uplink through NS
 	deduplicatedUplink, err = b.ns.Uplink(b.Component.GetContext(b.nsToken), deduplicatedUplink)
 	if err != nil {
-		return errors.BuildGRPCError(errors.Wrap(errors.FromGRPCError(err), "NetworkServer did not handle uplink"))
+		return errors.Wrap(errors.FromGRPCError(err), "NetworkServer did not handle uplink")
 	}
 
 	var announcements []*pb_discovery.Announcement
-	announcements, err = b.Discovery.GetAllHandlersForAppID(device.AppId)
+	announcements, err = b.Discovery.GetAllHandlersForAppID(device.AppID)
 	if err != nil {
 		return err
 	}
 	if len(announcements) == 0 {
-		return errors.NewErrNotFound(fmt.Sprintf("Handler for AppID %s", device.AppId))
+		return errors.NewErrNotFound(fmt.Sprintf("Handler for AppID %s", device.AppID))
 	}
 	if len(announcements) > 1 {
-		return errors.NewErrInternal(fmt.Sprintf("Multiple Handlers for AppID %s", device.AppId))
+		return errors.NewErrInternal(fmt.Sprintf("Multiple Handlers for AppID %s", device.AppID))
 	}
 
 	var handler chan<- *pb.DeduplicatedUplinkMessage
-	handler, err = b.getHandler(announcements[0].Id)
+	handler, err = b.getHandlerUplink(announcements[0].ID)
 	if err != nil {
 		return err
 	}
+
+	deduplicatedUplink.Trace = deduplicatedUplink.Trace.WithEvent(trace.ForwardEvent,
+		"handler", announcements[0].ID,
+	)
 
 	handler <- deduplicatedUplink
 

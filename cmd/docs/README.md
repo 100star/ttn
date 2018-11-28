@@ -5,18 +5,24 @@ The Things Network's backend servers.
 **Options**
 
 ```
-      --auth-token string          The JWT token to be used for the discovery server
-      --config string              config file (default "$HOME/.ttn.yml")
-      --description string         The description of this component
-      --discovery-address string   The address of the Discovery server (default "discover.thethingsnetwork.org:1900")
-      --elasticsearch string       Location of Elasticsearch server for logging
-      --health-port int            The port number where the health server should be started
-      --id string                  The id of this component
-      --key-dir string             The directory where public/private keys are stored (default "$HOME/.ttn")
-      --log-file string            Location of the log file
-      --no-cli-logs                Disable CLI logs
-      --public                     Announce this component as part of The Things Network (public community network)
-      --tls                        Use TLS
+      --allow-insecure                  Allow insecure fallback if TLS unavailable
+      --auth-token string               The JWT token to be used for the discovery server
+      --config string                   config file (default "$HOME/.ttn.yml")
+      --description string              The description of this component
+      --discovery-address string        The address of the Discovery server (default "discover.thethingsnetwork.org:1900")
+      --elasticsearch string            Location of Elasticsearch server for logging
+      --elasticsearch-password string   Password used to connect to the Elasticsearch server
+      --elasticsearch-prefix string     Prefix of the ES index for logging - changes the index from "<component>-<date>" to "<prefix>-<component>-<date>"
+      --elasticsearch-username string   Username used to connect to the Elasticsearch server
+      --eu-rx2-dr int                   RX2 data rate for the EU band (SF12=0,SF9=3) (default 3)
+      --health-port int                 The port number where the health server should be started
+      --id string                       The id of this component
+      --key-dir string                  The directory where public/private keys are stored (default "$HOME/.ttn")
+      --log-file string                 Location of the log file
+      --min-tls-version string          Minimum TLS version
+      --no-cli-logs                     Disable CLI logs
+      --public                          Announce this component as part of The Things Network (public community network)
+      --tls                             Use TLS (default true)
 ```
 
 
@@ -24,7 +30,7 @@ The Things Network's backend servers.
 
 
 
-**Usage:** `ttn broker`
+**Usage:** `ttn broker [flags]`
 
 **Options**
 
@@ -60,42 +66,62 @@ ttn broker register prefix registers a prefix to this Broker
 
 
 
-**Usage:** `ttn discovery`
+**Usage:** `ttn discovery [flags]`
 
 **Options**
 
 ```
-      --cache                   Add a cache in front of the database
-      --redis-address string    Redis server and port (default "localhost:6379")
-      --redis-db int            Redis database
-      --server-address string   The IP address to listen for communication (default "0.0.0.0")
-      --server-port int         The port for communication (default 1900)
+      --cache                         Add a cache in front of the database
+      --http-address string           The IP address where the gRPC proxy should listen (default "0.0.0.0")
+      --http-port int                 The port where the gRPC proxy should listen (default 8080)
+      --master-auth-servers strings   Auth servers that are allowed to manage this network (default [ttn-account-v2])
+      --redis-address string          Redis server and port (default "localhost:6379")
+      --redis-db int                  Redis database
+      --redis-password string         Redis password
+      --server-address string         The IP address to listen for communication (default "0.0.0.0")
+      --server-port int               The port for communication (default 1900)
 ```
+
+### ttn discovery gen-cert
+
+ttn gen-cert generates a TLS Certificate
+
+**Usage:** `ttn discovery gen-cert`
+
+### ttn discovery gen-keypair
+
+ttn gen-keypair generates a public/private keypair
+
+**Usage:** `ttn discovery gen-keypair`
 
 ## ttn handler
 
 
 
-**Usage:** `ttn handler`
+**Usage:** `ttn handler [flags]`
 
 **Options**
 
 ```
-      --amqp-address string              AMQP host and port. Leave empty to disable AMQP
-      --amqp-exchange string             AMQP exchange (default "ttn.handler")
-      --amqp-password string             AMQP password (default "guest")
-      --amqp-username string             AMQP username (default "guest")
-      --broker-id string                 The ID of the TTN Broker as announced in the Discovery server (default "dev")
-      --http-address string              The IP address where the gRPC proxy should listen (default "0.0.0.0")
-      --http-port int                    The port where the gRPC proxy should listen
-      --mqtt-address string              MQTT host and port
-      --mqtt-password string             MQTT password
-      --mqtt-username string             MQTT username
-      --redis-address string             Redis host and port (default "localhost:6379")
-      --redis-db int                     Redis database
-      --server-address string            The IP address to listen for communication (default "0.0.0.0")
-      --server-address-announce string   The public IP address to announce (default "localhost")
-      --server-port int                  The port for communication (default 1904)
+      --amqp-address string               AMQP host and port. Leave empty to disable AMQP
+      --amqp-address-announce string      AMQP address to announce (takes value of server-address-announce if empty while enabled)
+      --amqp-exchange string              AMQP exchange (default "ttn.handler")
+      --amqp-password string              AMQP password (default "guest")
+      --amqp-username string              AMQP username (default "guest")
+      --broker-id string                  The ID of the TTN Broker as announced in the Discovery server (default "dev")
+      --extra-device-attributes strings   Extra device attributes to be whitelisted
+      --http-address string               The IP address where the gRPC proxy should listen (default "0.0.0.0")
+      --http-port int                     The port where the gRPC proxy should listen (default 8084)
+      --mqtt-address string               MQTT host and port. Leave empty to disable MQTT
+      --mqtt-address-announce string      MQTT address to announce (takes value of server-address-announce if empty while enabled)
+      --mqtt-password string              MQTT password
+      --mqtt-username string              MQTT username
+      --redis-address string              Redis host and port (default "localhost:6379")
+      --redis-db int                      Redis database
+      --redis-password string             Redis password
+      --server-address string             The IP address to listen for communication (default "0.0.0.0")
+      --server-address-announce string    The public IP address to announce (default "localhost")
+      --server-port int                   The port for communication (default 1904)
 ```
 
 ### ttn handler gen-cert
@@ -114,7 +140,7 @@ ttn gen-keypair generates a public/private keypair
 
 
 
-**Usage:** `ttn networkserver`
+**Usage:** `ttn networkserver [flags]`
 
 **Options**
 
@@ -122,6 +148,7 @@ ttn gen-keypair generates a public/private keypair
       --net-id int                       LoRaWAN NetID (default 19)
       --redis-address string             Redis server and port (default "localhost:6379")
       --redis-db int                     Redis database
+      --redis-password string            Redis password
       --server-address string            The IP address to listen for communication (default "0.0.0.0")
       --server-address-announce string   The public IP address to announce (default "localhost")
       --server-port int                  The port for communication (default 1903)
@@ -131,7 +158,7 @@ ttn gen-keypair generates a public/private keypair
 
 ttn networkserver authorize generates a token that Brokers should use to connect
 
-**Usage:** `ttn networkserver authorize [id]`
+**Usage:** `ttn networkserver authorize [id] [flags]`
 
 **Options**
 
@@ -155,11 +182,12 @@ ttn gen-keypair generates a public/private keypair
 
 
 
-**Usage:** `ttn router`
+**Usage:** `ttn router [flags]`
 
 **Options**
 
 ```
+      --mqtt-address-announce string     MQTT address to announce
       --server-address string            The IP address to listen for communication (default "0.0.0.0")
       --server-address-announce string   The public IP address to announce (default "localhost")
       --server-port int                  The port for communication (default 1901)

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package gateway
@@ -6,7 +6,7 @@ package gateway
 import (
 	"sync"
 
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
 )
 
 // StatusStore is a database for setting and retrieving the latest gateway status

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package router
@@ -6,23 +6,31 @@ package router
 import (
 	"testing"
 
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/router/gateway"
 	. "github.com/TheThingsNetwork/ttn/utils/testing"
 	. "github.com/smartystreets/assertions"
+	"golang.org/x/net/context"
 )
 
 func TestHandleGatewayStatus(t *testing.T) {
 	a := New(t)
 	gtwID := "eui-0102030405060708"
 
+	logger := GetLogger(t, "TestHandleGatewayStatus")
 	router := &router{
 		Component: &component.Component{
-			Ctx: GetLogger(t, "TestHandleGatewayStatus"),
+			Context:  context.Background(),
+			Ctx:      logger,
+			Identity: &pb_discovery.Announcement{},
+			Monitor:  monitorclient.NewMonitorClient(),
 		},
 		gateways: map[string]*gateway.Gateway{},
 	}
+	router.InitStatus()
 
 	// Handle
 	statusMessage := &pb_gateway.Status{Description: "Fake Gateway"}

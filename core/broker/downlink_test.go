@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package broker
@@ -6,7 +6,8 @@ package broker
 import (
 	"testing"
 
-	pb "github.com/TheThingsNetwork/ttn/api/broker"
+	pb "github.com/TheThingsNetwork/api/broker"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	. "github.com/TheThingsNetwork/ttn/utils/testing"
@@ -20,20 +21,22 @@ func TestDownlink(t *testing.T) {
 	devEUI := types.DevEUI{0, 1, 2, 3, 4, 5, 6, 7}
 
 	dlch := make(chan *pb.DownlinkMessage, 2)
-
+	logger := GetLogger(t, "TestDownlink")
 	b := &broker{
 		Component: &component.Component{
-			Ctx: GetLogger(t, "TestDownlink"),
+			Ctx:     logger,
+			Monitor: monitorclient.NewMonitorClient(),
 		},
 		ns: &mockNetworkServer{},
 		routers: map[string]chan *pb.DownlinkMessage{
 			"routerID": dlch,
 		},
 	}
+	b.InitStatus()
 
 	err := b.HandleDownlink(&pb.DownlinkMessage{
-		DevEui: &devEUI,
-		AppEui: &appEUI,
+		DevEUI: devEUI,
+		AppEUI: appEUI,
 		DownlinkOption: &pb.DownlinkOption{
 			Identifier: "fakeID",
 		},
@@ -41,8 +44,8 @@ func TestDownlink(t *testing.T) {
 	a.So(err, ShouldNotBeNil)
 
 	err = b.HandleDownlink(&pb.DownlinkMessage{
-		DevEui: &devEUI,
-		AppEui: &appEUI,
+		DevEUI: devEUI,
+		AppEUI: appEUI,
 		DownlinkOption: &pb.DownlinkOption{
 			Identifier: "nonExistentRouterID:scheduleID",
 		},
@@ -50,8 +53,8 @@ func TestDownlink(t *testing.T) {
 	a.So(err, ShouldNotBeNil)
 
 	err = b.HandleDownlink(&pb.DownlinkMessage{
-		DevEui: &devEUI,
-		AppEui: &appEUI,
+		DevEUI: devEUI,
+		AppEUI: appEUI,
 		DownlinkOption: &pb.DownlinkOption{
 			Identifier: "routerID:scheduleID",
 		},

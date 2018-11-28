@@ -1,12 +1,12 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package networkserver
 
 import (
-	"github.com/TheThingsNetwork/ttn/api/broker"
-	"github.com/TheThingsNetwork/ttn/api/handler"
-	pb "github.com/TheThingsNetwork/ttn/api/networkserver"
+	"github.com/TheThingsNetwork/api/broker"
+	"github.com/TheThingsNetwork/api/handler"
+	pb "github.com/TheThingsNetwork/api/networkserver"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"github.com/TheThingsNetwork/ttn/utils/security"
 	"github.com/dgrijalva/jwt-go"
@@ -20,7 +20,7 @@ type networkServerRPC struct {
 }
 
 func (s *networkServerRPC) ValidateContext(ctx context.Context) error {
-	md, ok := metadata.FromContext(ctx)
+	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return errors.NewErrInternal("Could not get metadata from context")
 	}
@@ -50,75 +50,75 @@ func (s *networkServerRPC) ValidateContext(ctx context.Context) error {
 
 func (s *networkServerRPC) GetDevices(ctx context.Context, req *pb.DevicesRequest) (*pb.DevicesResponse, error) {
 	if err := s.ValidateContext(ctx); err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	if err := req.Validate(); err != nil {
-		return nil, errors.BuildGRPCError(errors.Wrap(err, "Invalid Devices Request"))
+		return nil, errors.Wrap(err, "Invalid Devices Request")
 	}
 	res, err := s.networkServer.HandleGetDevices(req)
 	if err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	return res, nil
 }
 
 func (s *networkServerRPC) PrepareActivation(ctx context.Context, activation *broker.DeduplicatedDeviceActivationRequest) (*broker.DeduplicatedDeviceActivationRequest, error) {
 	if err := s.ValidateContext(ctx); err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	if err := activation.Validate(); err != nil {
-		return nil, errors.BuildGRPCError(errors.Wrap(err, "Invalid Activation Request"))
+		return nil, errors.Wrap(err, "Invalid Activation Request")
 	}
 	res, err := s.networkServer.HandlePrepareActivation(activation)
 	if err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	return res, nil
 }
 
 func (s *networkServerRPC) Activate(ctx context.Context, activation *handler.DeviceActivationResponse) (*handler.DeviceActivationResponse, error) {
 	if err := s.ValidateContext(ctx); err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	if err := activation.Validate(); err != nil {
-		return nil, errors.BuildGRPCError(errors.Wrap(err, "Invalid Activation Request"))
+		return nil, errors.Wrap(err, "Invalid Activation Request")
 	}
 	res, err := s.networkServer.HandleActivate(activation)
 	if err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	return res, nil
 }
 
 func (s *networkServerRPC) Uplink(ctx context.Context, message *broker.DeduplicatedUplinkMessage) (*broker.DeduplicatedUplinkMessage, error) {
 	if err := s.ValidateContext(ctx); err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	if err := message.Validate(); err != nil {
-		return nil, errors.BuildGRPCError(errors.Wrap(err, "Invalid Uplink"))
+		return nil, errors.Wrap(err, "Invalid Uplink")
 	}
 	res, err := s.networkServer.HandleUplink(message)
 	if err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	return res, nil
 }
 
 func (s *networkServerRPC) Downlink(ctx context.Context, message *broker.DownlinkMessage) (*broker.DownlinkMessage, error) {
 	if err := s.ValidateContext(ctx); err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	if err := message.Validate(); err != nil {
-		return nil, errors.BuildGRPCError(errors.Wrap(err, "Invalid Downlink"))
+		return nil, errors.Wrap(err, "Invalid Downlink")
 	}
 	res, err := s.networkServer.HandleDownlink(message)
 	if err != nil {
-		return nil, errors.BuildGRPCError(err)
+		return nil, err
 	}
 	return res, nil
 }
 
-// RegisterRPC registers this networkserver as a NetworkServerServer (github.com/TheThingsNetwork/ttn/api/networkserver)
+// RegisterRPC registers this networkserver as a NetworkServerServer (github.com/TheThingsNetwork/api/networkserver)
 func (n *networkServer) RegisterRPC(s *grpc.Server) {
 	server := &networkServerRPC{n}
 	pb.RegisterNetworkServerServer(s, server)

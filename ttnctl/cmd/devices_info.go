@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TheThingsNetwork/ttn/api"
+	"github.com/TheThingsNetwork/api"
 	"github.com/TheThingsNetwork/ttn/ttnctl/util"
 	"github.com/spf13/cobra"
 )
@@ -40,15 +40,11 @@ var devicesInfoCmd = &cobra.Command{
     Options:
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		assertArgsLength(cmd, args, 1, 1)
 
-		if len(args) == 0 {
-			cmd.UsageFunc()(cmd)
-			return
-		}
-
-		devID := args[0]
-		if !api.ValidID(devID) {
-			ctx.Fatalf("Invalid Device ID") // TODO: Add link to wiki explaining device IDs
+		devID := strings.ToLower(args[0])
+		if err := api.NotEmptyAndValidID(devID, "Device ID"); err != nil {
+			ctx.Fatal(err.Error())
 		}
 
 		appID := util.GetAppID(ctx)
@@ -67,9 +63,18 @@ var devicesInfoCmd = &cobra.Command{
 
 		fmt.Println()
 
-		fmt.Printf("  Application ID: %s\n", dev.AppId)
-		fmt.Printf("       Device ID: %s\n", dev.DevId)
-		if lorawan := dev.GetLorawanDevice(); lorawan != nil {
+		fmt.Printf("  Application ID: %s\n", dev.AppID)
+		fmt.Printf("       Device ID: %s\n", dev.DevID)
+
+		if dev.Description != "" {
+			fmt.Printf("     Description: %s\n", dev.Description)
+		}
+
+		if dev.Latitude != 0 || dev.Longitude != 0 {
+			fmt.Printf("        Location: %f,%f\n", dev.Latitude, dev.Longitude)
+		}
+
+		if lorawan := dev.GetLoRaWANDevice(); lorawan != nil {
 			lastSeen := "never"
 			if lorawan.LastSeen > 0 {
 				lastSeen = fmt.Sprintf("%s", time.Unix(0, 0).Add(time.Duration(lorawan.LastSeen)))
@@ -79,8 +84,12 @@ var devicesInfoCmd = &cobra.Command{
 			fmt.Println()
 			fmt.Println("    LoRaWAN Info:")
 			fmt.Println()
-			fmt.Printf("     AppEUI: %s\n", formatBytes(lorawan.AppEui, byteFormat))
-			fmt.Printf("     DevEUI: %s\n", formatBytes(lorawan.DevEui, byteFormat))
+			fmt.Printf("     AppEUI: %s\n", formatBytes(lorawan.AppEUI, byteFormat))
+			devEUI := formatBytes(lorawan.DevEUI, byteFormat)
+			if lorawan.DevEUI.IsEmpty() {
+				devEUI = "register on join"
+			}
+			fmt.Printf("     DevEUI: %s\n", devEUI)
 			fmt.Printf("    DevAddr: %s\n", formatBytes(lorawan.DevAddr, byteFormat))
 			fmt.Printf("     AppKey: %s\n", formatBytes(lorawan.AppKey, byteFormat))
 			fmt.Printf("    AppSKey: %s\n", formatBytes(lorawan.AppSKey, byteFormat))
@@ -102,6 +111,13 @@ var devicesInfoCmd = &cobra.Command{
 			fmt.Printf("    Options: %s\n", strings.Join(options, ", "))
 		}
 
+		if len(dev.Attributes) != 0 {
+			fmt.Println()
+			fmt.Println(" Attributes:")
+			for k, v := range dev.Attributes {
+				printKV(k, v)
+			}
+		}
 	},
 }
 

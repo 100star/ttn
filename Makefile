@@ -4,14 +4,15 @@ SHELL = bash
 
 GIT_BRANCH = $(or $(CI_BUILD_REF_NAME) ,`git rev-parse --abbrev-ref HEAD 2>/dev/null`)
 GIT_COMMIT = $(or $(CI_BUILD_REF), `git rev-parse HEAD 2>/dev/null`)
+GIT_TAG = $(shell git describe --abbrev=0 --tags 2>/dev/null)
 BUILD_DATE = $(or $(CI_BUILD_DATE), `date -u +%Y-%m-%dT%H:%M:%SZ`)
-GO_PATH = `echo $(GOPATH) | awk -F':' '{print $$1}'`
-PARENT_DIRECTORY= `dirname $(PWD)`
-GO_SRC = `pwd | xargs dirname | xargs dirname | xargs dirname`
+GO_PATH = $(shell echo $(GOPATH) | awk -F':' '{print $$1}')
+PARENT_DIRECTORY= $(shell dirname $(PWD))
+GO_SRC = $(shell pwd | xargs dirname | xargs dirname | xargs dirname)
 
 # All
 
-.PHONY: all build-deps deps dev-deps protos-clean protos mocks test cover-clean cover-deps cover coveralls fmt vet ttn ttnctl build link docs clean docker
+.PHONY: all build-deps deps dev-deps protos-clean protos protodoc mocks test cover-clean cover-deps cover coveralls fmt vet ttn ttnctl build link docs clean docker
 
 all: deps build
 
@@ -24,22 +25,21 @@ deps: build-deps
 	govendor sync -v
 
 dev-deps: deps
-	@command -v protoc-gen-gofast > /dev/null || go get github.com/gogo/protobuf/protoc-gen-gofast
 	@command -v protoc-gen-grpc-gateway > /dev/null || go get github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
+	@command -v protoc-gen-gogottn > /dev/null || go install github.com/TheThingsNetwork/ttn/utils/protoc-gen-gogottn
+	@command -v protoc-gen-ttndoc > /dev/null || go install github.com/TheThingsNetwork/ttn/utils/protoc-gen-ttndoc
 	@command -v mockgen > /dev/null || go get github.com/golang/mock/mockgen
-	@command -v golint > /dev/null || go get github.com/golang/lint/golint
+	@command -v golint > /dev/null || go get golang.org/x/lint/golint
 	@command -v forego > /dev/null || go get github.com/ddollar/forego
 
 # Protobuf
 
 PROTO_FILES = $(shell find api -name "*.proto" -and -not -name ".git")
 COMPILED_PROTO_FILES = $(patsubst api%.proto, api%.pb.go, $(PROTO_FILES))
-PROTOC = protoc \
--I/usr/local/include \
--I$(GO_PATH)/src \
--I$(PARENT_DIRECTORY) \
--I$(GO_PATH)/src/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis \
---gofast_out=Mgoogle/api/annotations.proto=github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis/google/api,plugins=grpc:$(GO_SRC) \
+PROTOC_IMPORTS= -I/usr/local/include -I$(GO_PATH)/src -I$(PWD)/vendor -I$(PARENT_DIRECTORY) \
+-I$(GO_PATH)/src/github.com/grpc-ecosystem/grpc-gateway/third_party/googleapis
+PROTOC = protoc $(PROTOC_IMPORTS) \
+--gogottn_out=plugins=grpc:$(GO_SRC) \
 --grpc-gateway_out=:$(GO_SRC) `pwd`/
 
 protos-clean:
@@ -50,11 +50,24 @@ protos: $(COMPILED_PROTO_FILES)
 api/%.pb.go: api/%.proto
 	$(PROTOC)$<
 
+protodoc: $(PROTO_FILES)
+	protoc $(PROTOC_IMPORTS) --ttndoc_out=logtostderr=true,.lorawan.DevAddrManager=all:$(GO_SRC) `pwd`/api/protocol/lorawan/device_address.proto
+	protoc $(PROTOC_IMPORTS) --ttndoc_out=logtostderr=true,.handler.ApplicationManager=all:$(GO_SRC) `pwd`/api/handler/handler.proto
+	protoc $(PROTOC_IMPORTS) --ttndoc_out=logtostderr=true,.discovery.Discovery=all:$(GO_SRC) `pwd`/api/discovery/discovery.proto
+
 # Mocks
 
 mocks:
+	mockgen -source=./api/protocol/lorawan/device.pb.go -package lorawan DeviceManagerClient > api/protocol/lorawan/device_mock.go
 	mockgen -source=./api/networkserver/networkserver.pb.go -package networkserver NetworkServerClient > api/networkserver/networkserver_mock.go
 	mockgen -source=./api/discovery/client.go -package discovery Client > api/discovery/client_mock.go
+
+dev-certs:
+	ttn discovery gen-cert localhost 127.0.0.1 ::1 discovery --config ./.env/discovery/dev.yml
+	ttn router gen-cert localhost 127.0.0.1 ::1 router --config ./.env/router/dev.yml
+	ttn broker gen-cert localhost 127.0.0.1 ::1 broker --config ./.env/broker/dev.yml
+	ttn networkserver gen-cert localhost 127.0.0.1 ::1 networkserver --config ./.env/networkserver/dev.yml
+	ttn handler gen-cert localhost 127.0.0.1 ::1 handler --config ./.env/handler/dev.yml
 
 # Go Test
 
@@ -106,12 +119,22 @@ GOARCH ?= $(shell go env GOARCH)
 GOEXE = $(shell GOOS=$(GOOS) GOARCH=$(GOARCH) go env GOEXE)
 CGO_ENABLED ?= 0
 
+ifeq ($(GIT_BRANCH), $(GIT_TAG))
+	TTN_VERSION = $(GIT_TAG)
+	TAGS += prod
+else
+	TTN_VERSION = $(GIT_TAG)-dev
+	TAGS += dev
+endif
+
 DIST_FLAGS ?= -a -installsuffix cgo
 
 splitfilename = $(subst ., ,$(subst -, ,$(subst $(RELEASE_DIR)/,,$1)))
 GOOSfromfilename = $(word 2, $(call splitfilename, $1))
 GOARCHfromfilename = $(word 3, $(call splitfilename, $1))
-LDFLAGS = -ldflags "-w -X main.gitBranch=${GIT_BRANCH} -X main.gitCommit=${GIT_COMMIT} -X main.buildDate=${BUILD_DATE}"
+
+GOVARS += -X main.version=${TTN_VERSION} -X main.gitBranch=${GIT_BRANCH} -X main.gitCommit=${GIT_COMMIT} -X main.buildDate=${BUILD_DATE}
+LDFLAGS = -ldflags "-w $(GOVARS)"
 GOBUILD = CGO_ENABLED=$(CGO_ENABLED) GOOS=$(call GOOSfromfilename, $@) GOARCH=$(call GOARCHfromfilename, $@) go build $(DIST_FLAGS) ${LDFLAGS} -tags "${TAGS}" -o "$@"
 
 ttn: $(RELEASE_DIR)/ttn-$(GOOS)-$(GOARCH)$(GOEXE)

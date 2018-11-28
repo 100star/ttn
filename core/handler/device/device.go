@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package device
@@ -11,32 +11,73 @@ import (
 	"github.com/fatih/structs"
 )
 
+const currentDBVersion = "2.4.1"
+
 type DevNonce [2]byte
 type AppNonce [3]byte
 
+// Options for the device
+type Options struct {
+	ActivationConstraints string `json:"activation_constraints,omitempty"` // Activation Constraints (public/local/private)
+	DisableFCntCheck      bool   `json:"disable_fcnt_check,omitemtpy"`     // Disable Frame counter check (insecure)
+	Uses32BitFCnt         bool   `json:"uses_32_bit_fcnt,omitemtpy"`       // Use 32-bit Frame counters
+}
+
 // Device contains the state of a device
 type Device struct {
-	old           *Device
-	DevEUI        types.DevEUI           `redis:"dev_eui"`
-	AppEUI        types.AppEUI           `redis:"app_eui"`
-	AppID         string                 `redis:"app_id"`
-	DevID         string                 `redis:"dev_id"`
-	DevAddr       types.DevAddr          `redis:"dev_addr"`
-	AppKey        types.AppKey           `redis:"app_key"`
-	UsedDevNonces []DevNonce             `redis:"used_dev_nonces"`
-	UsedAppNonces []AppNonce             `redis:"used_app_nonces"`
-	NwkSKey       types.NwkSKey          `redis:"nwk_s_key"`
-	AppSKey       types.AppSKey          `redis:"app_s_key"`
-	NextDownlink  *types.DownlinkMessage `redis:"next_downlink"`
+	old *Device
+
+	DevEUI types.DevEUI `redis:"dev_eui"`
+	AppEUI types.AppEUI `redis:"app_eui"`
+	AppID  string       `redis:"app_id"`
+	DevID  string       `redis:"dev_id"`
+
+	Description string `redis:"description"`
+
+	Latitude  float32 `redis:"latitude"`
+	Longitude float32 `redis:"longitude"`
+	Altitude  int32   `redis:"altitude"`
+
+	Options Options `redis:"options"`
+
+	AppKey        types.AppKey `redis:"app_key"`
+	UsedDevNonces []DevNonce   `redis:"used_dev_nonces"`
+	UsedAppNonces []AppNonce   `redis:"used_app_nonces"`
+
+	DevAddr types.DevAddr `redis:"dev_addr"`
+	NwkSKey types.NwkSKey `redis:"nwk_s_key"`
+	AppSKey types.AppSKey `redis:"app_s_key"`
+	FCntUp  uint32        `redis:"f_cnt_up"` // Only used to detect retries
+
+	CurrentDownlink *types.DownlinkMessage `redis:"current_downlink"`
 
 	CreatedAt time.Time `redis:"created_at"`
 	UpdatedAt time.Time `redis:"updated_at"`
+
+	Attributes map[string]string `redis:"attributes"`
 }
 
 // StartUpdate stores the state of the device
 func (d *Device) StartUpdate() {
 	old := *d
 	d.old = &old
+}
+
+// Clone the device
+func (d *Device) Clone() *Device {
+	n := new(Device)
+	*n = *d
+	n.old = nil
+	if d.CurrentDownlink != nil {
+		n.CurrentDownlink = new(types.DownlinkMessage)
+		*n.CurrentDownlink = *d.CurrentDownlink
+	}
+	return n
+}
+
+// DBVersion of the model
+func (d *Device) DBVersion() string {
+	return currentDBVersion
 }
 
 // ChangedFields returns the names of the changed fields since the last call to StartUpdate
@@ -54,7 +95,23 @@ func (d Device) ChangedFields() (changed []string) {
 		}
 		if !reflect.DeepEqual(field.Value(), old.Field(field.Name()).Value()) {
 			changed = append(changed, field.Name())
+			if field.Kind() == reflect.Struct {
+				oldSubField := structs.New(old.Field(field.Name()).Value())
+				for _, subField := range field.Fields() {
+					if !subField.IsExported() {
+						continue
+					}
+					if !reflect.DeepEqual(subField.Value(), oldSubField.Field(subField.Name()).Value()) {
+						changed = append(changed, field.Name()+"."+subField.Name())
+					}
+				}
+			}
 		}
 	}
+
+	if len(changed) == 1 && changed[0] == "UpdatedAt" {
+		return []string{}
+	}
+
 	return
 }

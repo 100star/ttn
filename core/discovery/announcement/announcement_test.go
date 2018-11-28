@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package announcement
@@ -6,7 +6,7 @@ package announcement
 import (
 	"testing"
 
-	pb "github.com/TheThingsNetwork/ttn/api/discovery"
+	pb "github.com/TheThingsNetwork/api/discovery"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	. "github.com/smartystreets/assertions"
 )
@@ -57,30 +57,27 @@ func TestAnnouncementToProto(t *testing.T) {
 			AppEUIMetadata{types.AppEUI([8]byte{1, 2, 3, 4, 5, 6, 7, 8})},
 			AppIDMetadata{"AppID"},
 			PrefixMetadata{types.DevAddrPrefix{}},
-			OtherMetadata{},
 		},
 	}
 	proto := announcement.ToProto()
-	a.So(proto.Id, ShouldEqual, announcement.ID)
-	a.So(proto.Metadata, ShouldHaveLength, 4)
-	a.So(proto.Metadata[0].Key, ShouldEqual, pb.Metadata_APP_EUI)
-	a.So(proto.Metadata[1].Key, ShouldEqual, pb.Metadata_APP_ID)
-	a.So(proto.Metadata[2].Key, ShouldEqual, pb.Metadata_PREFIX)
-	a.So(proto.Metadata[3].Key, ShouldEqual, pb.Metadata_OTHER)
+	a.So(proto.ID, ShouldEqual, announcement.ID)
+	a.So(proto.Metadata, ShouldHaveLength, 3)
+	a.So(proto.Metadata[0].GetAppEUI(), ShouldResemble, []byte{1, 2, 3, 4, 5, 6, 7, 8})
+	a.So(proto.Metadata[1].GetAppID(), ShouldEqual, "AppID")
+	a.So(proto.Metadata[2].GetDevAddrPrefix(), ShouldResemble, []byte{0, 0, 0, 0, 0})
 }
 
 func TestAnnouncementFromProto(t *testing.T) {
 	a := New(t)
 	proto := &pb.Announcement{
-		Id: "ID",
+		ID: "ID",
 		Metadata: []*pb.Metadata{
-			&pb.Metadata{Key: pb.Metadata_APP_EUI, Value: []byte{1, 2, 3, 4, 5, 6, 7, 8}},
-			&pb.Metadata{Key: pb.Metadata_APP_ID, Value: []byte("AppID")},
-			&pb.Metadata{Key: pb.Metadata_PREFIX, Value: []byte{0, 0, 0, 0, 0}},
-			&pb.Metadata{Key: pb.Metadata_OTHER, Value: []byte{}},
+			&pb.Metadata{Metadata: &pb.Metadata_AppEUI{AppEUI: []byte{1, 2, 3, 4, 5, 6, 7, 8}}},
+			&pb.Metadata{Metadata: &pb.Metadata_AppID{AppID: "AppID"}},
+			&pb.Metadata{Metadata: &pb.Metadata_DevAddrPrefix{DevAddrPrefix: []byte{0, 0, 0, 0, 0}}},
 		},
 	}
 	announcement := FromProto(proto)
-	a.So(announcement.ID, ShouldEqual, proto.Id)
-	a.So(announcement.Metadata, ShouldHaveLength, 4)
+	a.So(announcement.ID, ShouldEqual, proto.ID)
+	a.So(announcement.Metadata, ShouldHaveLength, 3)
 }

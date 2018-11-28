@@ -1,3 +1,6 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package security
 
 import (
@@ -36,7 +39,7 @@ func TestCertFuncs(t *testing.T) {
 
 	GenerateKeypair(location)
 
-	err := GenerateCert(location, "localhost")
+	err := GenerateCert(location, "test cert", "localhost")
 	a.So(err, ShouldBeNil)
 
 	_, err = LoadCert(location + "/derp")

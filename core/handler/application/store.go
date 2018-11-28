@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package application
@@ -6,6 +6,7 @@ package application
 import (
 	"time"
 
+	"github.com/TheThingsNetwork/ttn/core/handler/application/migrate"
 	"github.com/TheThingsNetwork/ttn/core/storage"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"gopkg.in/redis.v5"
@@ -13,7 +14,8 @@ import (
 
 // Store interface for Applications
 type Store interface {
-	List() ([]*Application, error)
+	Count() (int, error)
+	List(opts *storage.ListOptions) ([]*Application, error)
 	Get(appID string) (*Application, error)
 	Set(new *Application, properties ...string) (err error)
 	Delete(appID string) error
@@ -30,9 +32,14 @@ func NewRedisApplicationStore(client *redis.Client, prefix string) Store {
 	}
 	store := storage.NewRedisMapStore(client, prefix+":"+redisApplicationPrefix)
 	store.SetBase(Application{}, "")
-	return &RedisApplicationStore{
+	for v, f := range migrate.ApplicationMigrations(prefix) {
+		store.AddMigration(v, f)
+	}
+	s := &RedisApplicationStore{
 		store: store,
 	}
+	countStore(s)
+	return s
 }
 
 // RedisApplicationStore stores Applications in Redis.
@@ -41,16 +48,21 @@ type RedisApplicationStore struct {
 	store *storage.RedisMapStore
 }
 
+// Count all applications in the store
+func (s *RedisApplicationStore) Count() (int, error) {
+	return s.store.Count("", nil)
+}
+
 // List all Applications
-func (s *RedisApplicationStore) List() ([]*Application, error) {
-	applicationsI, err := s.store.List("", nil)
+func (s *RedisApplicationStore) List(opts *storage.ListOptions) ([]*Application, error) {
+	applicationsI, err := s.store.List("", opts)
 	if err != nil {
 		return nil, err
 	}
-	applications := make([]*Application, 0, len(applicationsI))
-	for _, applicationI := range applicationsI {
+	applications := make([]*Application, len(applicationsI))
+	for i, applicationI := range applicationsI {
 		if application, ok := applicationI.(Application); ok {
-			applications = append(applications, &application)
+			applications[i] = &application
 		}
 	}
 	return applications, nil
@@ -72,17 +84,13 @@ func (s *RedisApplicationStore) Get(appID string) (*Application, error) {
 func (s *RedisApplicationStore) Set(new *Application, properties ...string) (err error) {
 	now := time.Now()
 	new.UpdatedAt = now
-
-	if new.old != nil {
-		err = s.store.Update(new.AppID, *new, properties...)
-	} else {
+	if new.old == nil {
 		new.CreatedAt = now
-		err = s.store.Create(new.AppID, *new, properties...)
 	}
+	err = s.store.Set(new.AppID, *new, properties...)
 	if err != nil {
 		return
 	}
-
 	return nil
 }
 

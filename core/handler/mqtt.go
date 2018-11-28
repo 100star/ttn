@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package handler
@@ -6,9 +6,9 @@ package handler
 import (
 	"time"
 
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/mqtt"
-	"github.com/apex/log"
 )
 
 // MQTTTimeout indicates how long we should wait for an MQTT publish
@@ -43,12 +43,13 @@ func (h *handler) HandleMQTT(username, password string, mqttBrokers ...string) e
 
 	go func() {
 		for up := range h.mqttUp {
-			ctx.WithFields(log.Fields{
+			ctx := ctx.WithFields(ttnlog.Fields{
 				"DevID": up.DevID,
 				"AppID": up.AppID,
-			}).Debug("Publish Uplink")
+			})
+			ctx.Debug("Publish Uplink")
 			upToken := h.mqttClient.PublishUplink(*up)
-			go func() {
+			go func(ctx ttnlog.Interface) {
 				if upToken.WaitTimeout(MQTTTimeout) {
 					if upToken.Error() != nil {
 						ctx.WithError(upToken.Error()).Warn("Could not publish Uplink")
@@ -56,10 +57,10 @@ func (h *handler) HandleMQTT(username, password string, mqttBrokers ...string) e
 				} else {
 					ctx.Warn("Uplink publish timeout")
 				}
-			}()
+			}(ctx)
 			if len(up.PayloadFields) > 0 {
 				fieldsToken := h.mqttClient.PublishUplinkFields(up.AppID, up.DevID, up.PayloadFields)
-				go func() {
+				go func(ctx ttnlog.Interface) {
 					if fieldsToken.WaitTimeout(MQTTTimeout) {
 						if fieldsToken.Error() != nil {
 							ctx.WithError(fieldsToken.Error()).Warn("Could not publish Uplink Fields")
@@ -67,18 +68,19 @@ func (h *handler) HandleMQTT(username, password string, mqttBrokers ...string) e
 					} else {
 						ctx.Warn("Uplink Fields publish timeout")
 					}
-				}()
+				}(ctx)
 			}
 		}
 	}()
 
 	go func() {
 		for event := range h.mqttEvent {
-			h.Ctx.WithFields(log.Fields{
+			ctx := ctx.WithFields(ttnlog.Fields{
 				"DevID": event.DevID,
 				"AppID": event.AppID,
 				"Event": event.Event,
-			}).Debug("Publish Event")
+			})
+			ctx.Debug("Publish Event")
 			var token mqtt.Token
 			if event.DevID == "" {
 				token = h.mqttClient.PublishAppEvent(event.AppID, event.Event, event.Data)
@@ -88,10 +90,10 @@ func (h *handler) HandleMQTT(username, password string, mqttBrokers ...string) e
 			go func() {
 				if token.WaitTimeout(MQTTTimeout) {
 					if token.Error() != nil {
-						h.Ctx.WithError(token.Error()).Warn("Could not publish Event")
+						ctx.WithError(token.Error()).Warn("Could not publish Event")
 					}
 				} else {
-					h.Ctx.Warn("Event publish timeout")
+					ctx.Warn("Event publish timeout")
 				}
 			}()
 		}

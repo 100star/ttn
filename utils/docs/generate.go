@@ -1,3 +1,6 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package docs
 
 import (
@@ -57,7 +60,7 @@ func Generate(cmd *cobra.Command) string {
 func genCmdList(cmd *cobra.Command) (cmds []*cobra.Command) {
 	cmds = append(cmds, cmd)
 	for _, c := range cmd.Commands() {
-		if !c.IsAvailableCommand() || c.IsHelpCommand() {
+		if !c.IsAvailableCommand() || c.IsAdditionalHelpTopicCommand() {
 			continue
 		}
 		cmds = append(cmds, genCmdList(c)...)

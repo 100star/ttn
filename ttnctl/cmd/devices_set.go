@@ -1,15 +1,17 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
-	"github.com/TheThingsNetwork/ttn/api"
+	"github.com/TheThingsNetwork/api"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/ttnctl/util"
-	"github.com/apex/log"
 	"github.com/spf13/cobra"
 )
 
@@ -24,15 +26,11 @@ var devicesSetCmd = &cobra.Command{
   INFO Updated device                           AppID=test DevID=test
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		assertArgsLength(cmd, args, 1, 1)
 
-		if len(args) == 0 {
-			cmd.UsageFunc()(cmd)
-			return
-		}
-
-		devID := args[0]
-		if !api.ValidID(devID) {
-			ctx.Fatalf("Invalid Device ID") // TODO: Add link to wiki explaining device IDs
+		devID := strings.ToLower(args[0])
+		if err := api.NotEmptyAndValidID(devID, "Device ID"); err != nil {
+			ctx.Fatal(err.Error())
 		}
 
 		appID := util.GetAppID(ctx)
@@ -59,7 +57,7 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid AppEUI: %s", err)
 			}
-			dev.GetLorawanDevice().AppEui = &appEUI
+			dev.GetLoRaWANDevice().AppEUI = appEUI
 		}
 
 		if in, err := cmd.Flags().GetString("dev-eui"); err == nil && in != "" {
@@ -74,7 +72,7 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid DevEUI: %s", err)
 			}
-			dev.GetLorawanDevice().DevEui = &devEUI
+			dev.GetLoRaWANDevice().DevEUI = devEUI
 		}
 
 		if in, err := cmd.Flags().GetString("dev-addr"); err == nil && in != "" {
@@ -89,7 +87,7 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid DevAddr: %s", err)
 			}
-			dev.GetLorawanDevice().DevAddr = &devAddr
+			dev.GetLoRaWANDevice().DevAddr = &devAddr
 		}
 
 		if in, err := cmd.Flags().GetString("nwk-s-key"); err == nil && in != "" {
@@ -97,7 +95,7 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid NwkSKey: %s", err)
 			}
-			dev.GetLorawanDevice().NwkSKey = &key
+			dev.GetLoRaWANDevice().NwkSKey = &key
 		}
 
 		if in, err := cmd.Flags().GetString("app-s-key"); err == nil && in != "" {
@@ -105,7 +103,7 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid AppSKey: %s", err)
 			}
-			dev.GetLorawanDevice().AppSKey = &key
+			dev.GetLoRaWANDevice().AppSKey = &key
 		}
 
 		if in, err := cmd.Flags().GetString("app-key"); err == nil && in != "" {
@@ -113,31 +111,67 @@ var devicesSetCmd = &cobra.Command{
 			if err != nil {
 				ctx.Fatalf("Invalid AppKey: %s", err)
 			}
-			dev.GetLorawanDevice().AppKey = &key
+			dev.GetLoRaWANDevice().AppKey = &key
 		}
 
 		if in, err := cmd.Flags().GetInt("fcnt-up"); err == nil && in != -1 {
-			dev.GetLorawanDevice().FCntUp = uint32(in)
+			dev.GetLoRaWANDevice().FCntUp = uint32(in)
 		}
 
 		if in, err := cmd.Flags().GetInt("fcnt-down"); err == nil && in != -1 {
-			dev.GetLorawanDevice().FCntDown = uint32(in)
+			dev.GetLoRaWANDevice().FCntDown = uint32(in)
 		}
 
 		if in, err := cmd.Flags().GetBool("enable-fcnt-check"); err == nil && in {
-			dev.GetLorawanDevice().DisableFCntCheck = false
+			dev.GetLoRaWANDevice().DisableFCntCheck = false
 		}
 
 		if in, err := cmd.Flags().GetBool("disable-fcnt-check"); err == nil && in {
-			dev.GetLorawanDevice().DisableFCntCheck = true
+			dev.GetLoRaWANDevice().DisableFCntCheck = true
 		}
 
 		if in, err := cmd.Flags().GetBool("32-bit-fcnt"); err == nil && in {
-			dev.GetLorawanDevice().Uses32BitFCnt = true
+			dev.GetLoRaWANDevice().Uses32BitFCnt = true
 		}
 
 		if in, err := cmd.Flags().GetBool("16-bit-fcnt"); err == nil && in {
-			dev.GetLorawanDevice().Uses32BitFCnt = false
+			dev.GetLoRaWANDevice().Uses32BitFCnt = false
+		}
+
+		if in, err := cmd.Flags().GetFloat32("latitude"); err == nil && in != 0 {
+			dev.Latitude = in
+		}
+
+		if in, err := cmd.Flags().GetFloat32("longitude"); err == nil && in != 0 {
+			dev.Longitude = in
+		}
+
+		if in, err := cmd.Flags().GetInt32("altitude"); err == nil && in != 0 {
+			dev.Altitude = in
+		}
+
+		if in, err := cmd.Flags().GetString("description"); err == nil && in != "" {
+			dev.Description = in
+		}
+
+		if in, err := cmd.Flags().GetStringSlice("attr-set"); err == nil && len(in) > 0 {
+			if dev.Attributes == nil {
+				dev.Attributes = make(map[string]string, len(in))
+			}
+			for _, v := range in {
+				s := strings.SplitN(v, ":", 2)
+				if len(s) == 2 {
+					dev.Attributes[s[0]] = s[1]
+				} else {
+					ctx.Error(fmt.Sprintf("attr-set: cannot parse key:value %s", s))
+				}
+			}
+		}
+
+		if in, err := cmd.Flags().GetStringSlice("attr-remove"); err == nil && len(in) > 0 {
+			for _, v := range in {
+				delete(dev.Attributes, v)
+			}
 		}
 
 		err = manager.SetDevice(dev)
@@ -145,7 +179,7 @@ var devicesSetCmd = &cobra.Command{
 			ctx.WithError(err).Fatal("Could not update Device")
 		}
 
-		ctx.WithFields(log.Fields{
+		ctx.WithFields(ttnlog.Fields{
 			"AppID": appID,
 			"DevID": devID,
 		}).Info("Updated device")
@@ -171,4 +205,13 @@ func init() {
 	devicesSetCmd.Flags().Bool("enable-fcnt-check", false, "Enable FCnt check (default)")
 	devicesSetCmd.Flags().Bool("32-bit-fcnt", false, "Use 32 bit FCnt (default)")
 	devicesSetCmd.Flags().Bool("16-bit-fcnt", false, "Use 16 bit FCnt")
+
+	devicesSetCmd.Flags().Float32("latitude", 0, "Set latitude")
+	devicesSetCmd.Flags().Float32("longitude", 0, "Set longitude")
+	devicesSetCmd.Flags().Int32("altitude", 0, "Set altitude")
+
+	devicesSetCmd.Flags().String("description", "", "Set Description")
+
+	devicesSetCmd.Flags().StringSlice("attr-set", nil, "Add a device attribute (key:value)")
+	devicesSetCmd.Flags().StringSlice("attr-remove", nil, "Remove device attribute")
 }

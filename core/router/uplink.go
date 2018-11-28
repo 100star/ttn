@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package router
@@ -6,23 +6,38 @@ package router
 import (
 	"time"
 
-	pb_broker "github.com/TheThingsNetwork/ttn/api/broker"
-	pb_lorawan "github.com/TheThingsNetwork/ttn/api/protocol/lorawan"
-	pb "github.com/TheThingsNetwork/ttn/api/router"
+	pb_broker "github.com/TheThingsNetwork/api/broker"
+	"github.com/TheThingsNetwork/api/logfields"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	pb "github.com/TheThingsNetwork/api/router"
+	"github.com/TheThingsNetwork/api/trace"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
+	"github.com/TheThingsNetwork/ttn/core/router/gateway"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
-	"github.com/apex/log"
 	"github.com/brocaar/lorawan"
 )
 
 func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err error) {
-	ctx := r.Ctx.WithField("GatewayID", gatewayID)
+	ctx := r.Ctx.WithField("GatewayID", gatewayID).WithFields(logfields.ForMessage(uplink))
 	start := time.Now()
+	var gateway *gateway.Gateway
+
+	r.RegisterReceived(uplink)
 	defer func() {
 		if err != nil {
+			uplink.Trace = uplink.Trace.WithEvent(trace.DropEvent, "reason", err)
 			ctx.WithError(err).Warn("Could not handle uplink")
+		} else {
+			r.RegisterHandled(uplink)
+		}
+		if gateway != nil && gateway.MonitorStream != nil {
+			gateway.MonitorStream.Send(uplink)
 		}
 	}()
+	r.status.uplink.Mark(1)
+
+	uplink.Trace = uplink.Trace.WithEvent(trace.ReceiveEvent, "gateway", gatewayID)
 
 	// LoRaWAN: Unmarshal
 	var phyPayload lorawan.PHYPayload
@@ -38,21 +53,27 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 		}
 		devEUI := types.DevEUI(joinRequestPayload.DevEUI)
 		appEUI := types.AppEUI(joinRequestPayload.AppEUI)
-		ctx.WithFields(log.Fields{
+		ctx.WithFields(ttnlog.Fields{
 			"DevEUI": devEUI,
 			"AppEUI": appEUI,
 		}).Debug("Handle Uplink as Activation")
-		_, err := r.HandleActivation(gatewayID, &pb.DeviceActivationRequest{
+		r.HandleActivation(gatewayID, &pb.DeviceActivationRequest{
 			Payload:          uplink.Payload,
-			DevEui:           &devEUI,
-			AppEui:           &appEUI,
+			DevEUI:           devEUI,
+			AppEUI:           appEUI,
 			ProtocolMetadata: uplink.ProtocolMetadata,
 			GatewayMetadata:  uplink.GatewayMetadata,
+			Trace:            uplink.Trace.WithEvent("handle uplink as activation"),
 		})
-		return err
+		return nil
 	}
 
-	if lorawan := uplink.ProtocolMetadata.GetLorawan(); lorawan != nil {
+	if phyPayload.MHDR.MType != lorawan.UnconfirmedDataUp && phyPayload.MHDR.MType != lorawan.ConfirmedDataUp {
+		ctx.Warn("Accidentally received non-uplink message")
+		return nil
+	}
+
+	if lorawan := uplink.ProtocolMetadata.GetLoRaWAN(); lorawan != nil {
 		ctx = ctx.WithField("Modulation", lorawan.Modulation.String())
 		if lorawan.Modulation == pb_lorawan.Modulation_LORA {
 			ctx = ctx.WithField("DataRate", lorawan.DataRate)
@@ -61,13 +82,11 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 		}
 	}
 
-	if gateway := uplink.GatewayMetadata; gateway != nil {
-		ctx = ctx.WithFields(log.Fields{
-			"Frequency": gateway.Frequency,
-			"RSSI":      gateway.Rssi,
-			"SNR":       gateway.Snr,
-		})
-	}
+	ctx = ctx.WithFields(ttnlog.Fields{
+		"Frequency": uplink.GatewayMetadata.Frequency,
+		"RSSI":      uplink.GatewayMetadata.RSSI,
+		"SNR":       uplink.GatewayMetadata.SNR,
+	})
 
 	macPayload, ok := phyPayload.MACPayload.(*lorawan.MACPayload)
 	if !ok {
@@ -75,12 +94,12 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 	}
 	devAddr := types.DevAddr(macPayload.FHDR.DevAddr)
 
-	ctx = ctx.WithFields(log.Fields{
+	ctx = ctx.WithFields(ttnlog.Fields{
 		"DevAddr": devAddr,
 		"FCnt":    macPayload.FHDR.FCnt,
 	})
 
-	gateway := r.getGateway(gatewayID)
+	gateway = r.getGateway(gatewayID)
 
 	if err = gateway.HandleUplink(uplink); err != nil {
 		return err
@@ -89,6 +108,9 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 	var downlinkOptions []*pb_broker.DownlinkOption
 	if gateway.Schedule.IsActive() {
 		downlinkOptions = r.buildDownlinkOptions(uplink, false, gateway)
+		uplink.Trace = uplink.Trace.WithEvent(trace.BuildDownlinkEvent,
+			"options", len(downlinkOptions),
+		)
 	}
 
 	ctx = ctx.WithField("DownlinkOptions", len(downlinkOptions))
@@ -101,10 +123,15 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 
 	if len(brokers) == 0 {
 		ctx.Debug("No brokers to forward message to")
+		uplink.Trace = uplink.Trace.WithEvent(trace.DropEvent, "reason", "no brokers")
 		return nil
 	}
 
 	ctx = ctx.WithField("NumBrokers", len(brokers))
+
+	uplink.Trace = uplink.Trace.WithEvent(trace.ForwardEvent,
+		"brokers", len(brokers),
+	)
 
 	// Forward to all brokers
 	for _, broker := range brokers {
@@ -117,6 +144,7 @@ func (r *router) HandleUplink(gatewayID string, uplink *pb.UplinkMessage) (err e
 			ProtocolMetadata: uplink.ProtocolMetadata,
 			GatewayMetadata:  uplink.GatewayMetadata,
 			DownlinkOptions:  downlinkOptions,
+			Trace:            uplink.Trace,
 		}
 	}
 

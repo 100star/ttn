@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
@@ -11,10 +11,10 @@ import (
 	"strings"
 	"syscall"
 
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/networkserver"
 	"github.com/TheThingsNetwork/ttn/core/types"
-	"github.com/apex/log"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -27,7 +27,7 @@ var networkserverCmd = &cobra.Command{
 	Short: "The Things Network networkserver",
 	Long:  ``,
 	PreRun: func(cmd *cobra.Command, args []string) {
-		ctx.WithFields(log.Fields{
+		ctx.WithFields(ttnlog.Fields{
 			"Server":   fmt.Sprintf("%s:%d", viper.GetString("networkserver.server-address"), viper.GetInt("networkserver.server-port")),
 			"Database": fmt.Sprintf("%s/%d", viper.GetString("networkserver.redis-address"), viper.GetInt("networkserver.redis-db")),
 			"NetID":    viper.GetString("networkserver.net-id"),
@@ -39,14 +39,16 @@ var networkserverCmd = &cobra.Command{
 		// Redis Client
 		client := redis.NewClient(&redis.Options{
 			Addr:     viper.GetString("networkserver.redis-address"),
-			Password: "", // no password set
+			Password: viper.GetString("networkserver.redis-password"),
 			DB:       viper.GetInt("networkserver.redis-db"),
 		})
 
-		connectRedis(client)
+		if err := connectRedis(client); err != nil {
+			ctx.WithError(err).Fatal("Could not initialize database connection")
+		}
 
 		// Component
-		component, err := component.New(ctx, "networkserver", fmt.Sprintf("%s:%d", viper.GetString("networkserver.server-address-announce"), viper.GetInt("networkserver.server-port")))
+		component, err := component.New(ttnlog.Get(), "networkserver", fmt.Sprintf("%s:%d", viper.GetString("networkserver.server-address-announce"), viper.GetInt("networkserver.server-port")))
 		if err != nil {
 			ctx.WithError(err).Fatal("Could not initialize component")
 		}
@@ -82,9 +84,10 @@ var networkserverCmd = &cobra.Command{
 		grpc := grpc.NewServer(component.ServerOptions()...)
 
 		// Register and Listen
-		component.RegisterHealthServer(grpc)
 		networkserver.RegisterRPC(grpc)
 		networkserver.RegisterManager(grpc)
+		component.RegisterHealthServer(grpc) // must be last one
+
 		go grpc.Serve(lis)
 
 		sigChan := make(chan os.Signal)
@@ -101,6 +104,8 @@ func init() {
 
 	networkserverCmd.Flags().String("redis-address", "localhost:6379", "Redis server and port")
 	viper.BindPFlag("networkserver.redis-address", networkserverCmd.Flags().Lookup("redis-address"))
+	networkserverCmd.Flags().String("redis-password", "", "Redis password")
+	viper.BindPFlag("networkserver.redis-password", networkserverCmd.Flags().Lookup("redis-password"))
 	networkserverCmd.Flags().Int("redis-db", 0, "Redis database")
 	viper.BindPFlag("networkserver.redis-db", networkserverCmd.Flags().Lookup("redis-db"))
 

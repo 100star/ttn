@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
@@ -20,9 +20,15 @@ var subscribeCmd = &cobra.Command{
 	Short: "Subscribe to events for this application",
 	Long:  `ttnctl subscribe can be used to subscribe to events for this application.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		assertArgsLength(cmd, args, 0, 0)
+
+		accessKey, err := cmd.Flags().GetString("access-key")
+		if err != nil {
+			ctx.WithError(err).Fatal("Failed to read access-key flag")
+		}
 		util.GetAccount(ctx)
 
-		client := util.GetMQTT(ctx)
+		client := util.GetMQTT(ctx, accessKey)
 		defer client.Disconnect()
 
 		token := client.SubscribeActivations(func(client mqtt.Client, appID string, devID string, req types.Activation) {
@@ -69,4 +75,5 @@ var subscribeCmd = &cobra.Command{
 
 func init() {
 	RootCmd.AddCommand(subscribeCmd)
+	subscribeCmd.Flags().String("access-key", "", "The access key to use")
 }

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package broker
@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	pb_broker "github.com/TheThingsNetwork/ttn/api/broker"
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
-	pb_networkserver "github.com/TheThingsNetwork/ttn/api/networkserver"
+	"github.com/TheThingsNetwork/api/discovery/discoveryclient"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
+	pb_networkserver "github.com/TheThingsNetwork/api/networkserver"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	. "github.com/TheThingsNetwork/ttn/utils/testing"
 	"github.com/golang/mock/gomock"
@@ -18,21 +18,23 @@ import (
 type testBroker struct {
 	*broker
 	ctrl      *gomock.Controller
-	discovery *pb_discovery.MockClient
+	discovery *discoveryclient.MockClient
 	ns        *pb_networkserver.MockNetworkServerClient
 }
 
 func getTestBroker(t *testing.T) *testBroker {
 	ctrl := gomock.NewController(t)
-	discovery := pb_discovery.NewMockClient(ctrl)
+	discovery := discoveryclient.NewMockClient(ctrl)
 	ns := pb_networkserver.NewMockNetworkServerClient(ctrl)
-	return &testBroker{
+	logger := GetLogger(t, "TestBroker")
+	b := &testBroker{
 		broker: &broker{
 			Component: &component.Component{
 				Discovery: discovery,
-				Ctx:       GetLogger(t, "TestBroker"),
+				Ctx:       logger,
+				Monitor:   monitorclient.NewMonitorClient(),
 			},
-			handlers:               make(map[string]chan *pb_broker.DeduplicatedUplinkMessage),
+			handlers:               make(map[string]*handler),
 			activationDeduplicator: NewDeduplicator(10 * time.Millisecond),
 			uplinkDeduplicator:     NewDeduplicator(10 * time.Millisecond),
 			ns:                     ns,
@@ -41,4 +43,6 @@ func getTestBroker(t *testing.T) *testBroker {
 		ctrl:      ctrl,
 		discovery: discovery,
 	}
+	b.InitStatus()
+	return b
 }

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package toa
@@ -57,9 +57,7 @@ func ComputeLoRa(payloadSize uint, datr string, codr string) (time.Duration, err
 // ComputeFSK computes the time-on-air given a PHY payload size in bytes and a
 // bitrate, Note that this function operates on the PHY payload size and does
 // not add the LoRaWAN header.
-//
-// TODO: (@tftelkamp): Verify this
 func ComputeFSK(payloadSize uint, bitrate int) (time.Duration, error) {
-	tPkt := int(time.Second) * (int(payloadSize) + 5 + 3 + 1 + 2) * 8 / bitrate
+	tPkt := int64(time.Second) * (int64(payloadSize) + 5 + 3 + 1 + 2) * 8 / int64(bitrate)
 	return time.Duration(tPkt), nil
 }

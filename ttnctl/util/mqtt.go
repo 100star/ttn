@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package util
@@ -8,15 +8,15 @@ import (
 	"fmt"
 	"strings"
 
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/mqtt"
-	"github.com/apex/log"
 	"github.com/gosuri/uitable"
 	"github.com/spf13/viper"
 )
 
 // GetMQTT connects a new MQTT clients with the specified credentials
-func GetMQTT(ctx log.Interface) mqtt.Client {
-	username, password, err := getMQTTCredentials(ctx)
+func GetMQTT(ctx ttnlog.Interface, accessKey string) mqtt.Client {
+	username, password, err := getMQTTCredentials(ctx, accessKey)
 	if err != nil {
 		ctx.WithError(err).Fatal("Failed to get MQTT credentials")
 	}
@@ -29,7 +29,7 @@ func GetMQTT(ctx log.Interface) mqtt.Client {
 	broker := fmt.Sprintf("%s://%s", mqttProto, viper.GetString("mqtt-address"))
 	client := mqtt.NewClient(ctx, "ttnctl", username, password, broker)
 
-	ctx.WithFields(log.Fields{
+	ctx.WithFields(ttnlog.Fields{
 		"MQTT Broker": broker,
 		"Username":    username,
 	}).Info("Connecting to MQTT...")
@@ -41,7 +41,7 @@ func GetMQTT(ctx log.Interface) mqtt.Client {
 	return client
 }
 
-func getMQTTCredentials(ctx log.Interface) (username string, password string, err error) {
+func getMQTTCredentials(ctx ttnlog.Interface, accessKey string) (username string, password string, err error) {
 	username = viper.GetString("mqtt-username")
 	password = viper.GetString("mqtt-password")
 	if username != "" {
@@ -53,16 +53,26 @@ func getMQTTCredentials(ctx log.Interface) (username string, password string, er
 		return
 	}
 
-	return getAppMQTTCredentials(ctx)
+	return getAppMQTTCredentials(ctx, accessKey)
 }
 
-func getAppMQTTCredentials(ctx log.Interface) (string, string, error) {
+func getAppMQTTCredentials(ctx ttnlog.Interface, accessKey string) (string, string, error) {
 	appID := GetAppID(ctx)
 
 	account := GetAccount(ctx)
 	app, err := account.FindApplication(appID)
 	if err != nil {
 		return "", "", err
+	}
+
+	if accessKey != "" {
+		for _, key := range app.AccessKeys {
+			if key.Name == accessKey {
+				return appID, key.Key, nil
+			}
+		}
+
+		return "", "", fmt.Errorf("Access key with name %s does not exist", accessKey)
 	}
 
 	var keyIdx int

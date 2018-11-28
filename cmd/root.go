@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
@@ -9,11 +9,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	cliHandler "github.com/TheThingsNetwork/go-utils/handlers/cli"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
+	"github.com/TheThingsNetwork/go-utils/log/apex"
+	"github.com/TheThingsNetwork/go-utils/log/grpc"
+	promlog "github.com/TheThingsNetwork/go-utils/log/prometheus"
 	"github.com/TheThingsNetwork/ttn/api"
 	esHandler "github.com/TheThingsNetwork/ttn/utils/elasticsearch/handler"
 	"github.com/apex/log"
@@ -24,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/tj/go-elastic"
+	"google.golang.org/grpc/grpclog"
 	"gopkg.in/redis.v5"
 )
 
@@ -31,7 +35,7 @@ var cfgFile string
 
 var logFile *os.File
 
-var ctx log.Interface
+var ctx ttnlog.Interface
 
 // RootCmd is executed when ttn is executed without a subcommand
 var RootCmd = &cobra.Command{
@@ -69,21 +73,37 @@ var RootCmd = &cobra.Command{
 			esClient.HTTPClient = &http.Client{
 				Timeout: 5 * time.Second,
 			}
+
+			esUsername := viper.GetString("elasticsearch-username")
+			esPassword := viper.GetString("elasticsearch-password")
+			if esUsername != "" {
+				esClient.SetAuthCredentials(esUsername, esPassword)
+			}
+
+			esPrefix := cmd.Name()
+			if prefix := viper.GetString("elasticsearch-prefix"); prefix != "" {
+				esPrefix = fmt.Sprintf("%s-%s", prefix, esPrefix)
+			}
+
 			logHandlers = append(logHandlers, levelHandler.New(esHandler.New(&esHandler.Config{
 				Client:     esClient,
-				Prefix:     cmd.Name(),
+				Prefix:     esPrefix,
 				BufferSize: 10,
 			}), logLevel))
 		}
 
-		ctx = &log.Logger{
+		// Set the API/gRPC logger
+		ctx = promlog.Wrap(apex.Wrap(&log.Logger{
 			Handler: multiHandler.New(logHandlers...),
+		}))
+		ttnlog.Set(ctx)
+		grpclog.SetLogger(grpc.Wrap(ttnlog.Get()))
+
+		if viper.GetBool("allow-insecure") {
+			api.AllowInsecureFallback = true
 		}
 
-		// Set the API/gRPC logger
-		api.SetLogger(api.Apex(ctx))
-
-		ctx.WithFields(log.Fields{
+		ctx.WithFields(ttnlog.Fields{
 			"ComponentID":              viper.GetString("id"),
 			"Description":              viper.GetString("description"),
 			"Discovery Server Address": viper.GetString("discovery-address"),
@@ -101,14 +121,6 @@ var RootCmd = &cobra.Command{
 // Execute adds all child commands to the root command sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	defer func() {
-		buf := make([]byte, 1<<16)
-		runtime.Stack(buf, false)
-		if thePanic := recover(); thePanic != nil && ctx != nil {
-			ctx.WithField("panic", thePanic).WithField("stack", string(buf)).Fatal("Stopping because of panic")
-		}
-	}()
-
 	if err := RootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(-1)
@@ -120,27 +132,25 @@ func init() {
 
 	RootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default \"$HOME/.ttn.yml\")")
 
+	RootCmd.PersistentFlags().Bool("no-cli-logs", false, "Disable CLI logs")
+	RootCmd.PersistentFlags().String("log-file", "", "Location of the log file")
+	RootCmd.PersistentFlags().String("elasticsearch", "", "Location of Elasticsearch server for logging")
+	RootCmd.PersistentFlags().String("elasticsearch-prefix", "", "Prefix of the ES index for logging - changes the index from \"<component>-<date>\" to \"<prefix>-<component>-<date>\"")
+	RootCmd.PersistentFlags().String("elasticsearch-username", "", "Username used to connect to the Elasticsearch server")
+	RootCmd.PersistentFlags().String("elasticsearch-password", "", "Password used to connect to the Elasticsearch server")
+
 	RootCmd.PersistentFlags().String("id", "", "The id of this component")
-	viper.BindPFlag("id", RootCmd.PersistentFlags().Lookup("id"))
-
 	RootCmd.PersistentFlags().String("description", "", "The description of this component")
-	viper.BindPFlag("description", RootCmd.PersistentFlags().Lookup("description"))
-
 	RootCmd.PersistentFlags().Bool("public", false, "Announce this component as part of The Things Network (public community network)")
-	viper.BindPFlag("public", RootCmd.PersistentFlags().Lookup("public"))
 
 	RootCmd.PersistentFlags().String("discovery-address", "discover.thethingsnetwork.org:1900", "The address of the Discovery server")
-	viper.BindPFlag("discovery-address", RootCmd.PersistentFlags().Lookup("discovery-address"))
-
-	viper.SetDefault("auth-servers", map[string]string{
-		"ttn-account": "https://account.thethingsnetwork.org",
-	})
-
 	RootCmd.PersistentFlags().String("auth-token", "", "The JWT token to be used for the discovery server")
-	viper.BindPFlag("auth-token", RootCmd.PersistentFlags().Lookup("auth-token"))
 
 	RootCmd.PersistentFlags().Int("health-port", 0, "The port number where the health server should be started")
-	viper.BindPFlag("health-port", RootCmd.PersistentFlags().Lookup("health-port"))
+
+	viper.SetDefault("auth-servers", map[string]string{
+		"ttn-account-v2": "https://account.thethingsnetwork.org",
+	})
 
 	dir, err := homedir.Dir()
 	if err == nil {
@@ -153,20 +163,14 @@ func init() {
 		}
 	}
 
-	RootCmd.PersistentFlags().Bool("tls", false, "Use TLS")
-	viper.BindPFlag("tls", RootCmd.PersistentFlags().Lookup("tls"))
-
+	RootCmd.PersistentFlags().Bool("tls", true, "Use TLS")
+	RootCmd.PersistentFlags().String("min-tls-version", "", "Minimum TLS version")
+	RootCmd.PersistentFlags().Bool("allow-insecure", false, "Allow insecure fallback if TLS unavailable")
 	RootCmd.PersistentFlags().String("key-dir", path.Clean(dir+"/.ttn/"), "The directory where public/private keys are stored")
-	viper.BindPFlag("key-dir", RootCmd.PersistentFlags().Lookup("key-dir"))
 
-	RootCmd.PersistentFlags().Bool("no-cli-logs", false, "Disable CLI logs")
-	viper.BindPFlag("no-cli-logs", RootCmd.PersistentFlags().Lookup("no-cli-logs"))
+	RootCmd.PersistentFlags().Int("eu-rx2-dr", 3, "RX2 data rate for the EU band (SF12=0,SF9=3)")
 
-	RootCmd.PersistentFlags().String("log-file", "", "Location of the log file")
-	viper.BindPFlag("log-file", RootCmd.PersistentFlags().Lookup("log-file"))
-
-	RootCmd.PersistentFlags().String("elasticsearch", "", "Location of Elasticsearch server for logging")
-	viper.BindPFlag("elasticsearch", RootCmd.PersistentFlags().Lookup("elasticsearch"))
+	viper.BindPFlags(RootCmd.PersistentFlags())
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -188,6 +192,7 @@ func initConfig() {
 	err := viper.ReadInConfig()
 	if err != nil {
 		fmt.Println("Error when reading config file:", err)
+		os.Exit(1)
 	} else if err == nil {
 		fmt.Println("Using config file:", viper.ConfigFileUsed())
 	}

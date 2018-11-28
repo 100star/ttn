@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package router
@@ -6,11 +6,11 @@ package router
 import (
 	"testing"
 
-	"github.com/TheThingsNetwork/ttn/api/discovery"
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
-	pb_protocol "github.com/TheThingsNetwork/ttn/api/protocol"
-	pb_lorawan "github.com/TheThingsNetwork/ttn/api/protocol/lorawan"
-	pb "github.com/TheThingsNetwork/ttn/api/router"
+	"github.com/TheThingsNetwork/api/discovery"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
+	pb_protocol "github.com/TheThingsNetwork/api/protocol"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	pb "github.com/TheThingsNetwork/api/router"
 	"github.com/TheThingsNetwork/ttn/core/router/gateway"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	. "github.com/TheThingsNetwork/ttn/utils/testing"
@@ -19,10 +19,10 @@ import (
 )
 
 // newReferenceGateway returns a default gateway
-func newReferenceGateway(t *testing.T, region string) *gateway.Gateway {
+func newReferenceGateway(t *testing.T, frequencyPlan string) *gateway.Gateway {
 	gtw := gateway.NewGateway(GetLogger(t, "ReferenceGateway"), "eui-0102030405060708")
 	gtw.Status.Update(&pb_gateway.Status{
-		Region: region,
+		FrequencyPlan: frequencyPlan,
 	})
 	return gtw
 }
@@ -46,17 +46,17 @@ func newReferenceUplink() *pb.UplinkMessage {
 
 	up := &pb.UplinkMessage{
 		Payload: bytes,
-		ProtocolMetadata: &pb_protocol.RxMetadata{Protocol: &pb_protocol.RxMetadata_Lorawan{Lorawan: &pb_lorawan.Metadata{
+		ProtocolMetadata: pb_protocol.RxMetadata{Protocol: &pb_protocol.RxMetadata_LoRaWAN{LoRaWAN: &pb_lorawan.Metadata{
 			CodingRate: "4/5",
 			DataRate:   "SF7BW125",
 			Modulation: pb_lorawan.Modulation_LORA,
 		}}},
-		GatewayMetadata: &pb_gateway.RxMetadata{
-			GatewayId: gtwID,
+		GatewayMetadata: pb_gateway.RxMetadata{
+			GatewayID: gtwID,
 			Timestamp: 100,
 			Frequency: 868100000,
-			Rssi:      -25.0,
-			Snr:       5.0,
+			RSSI:      -25.0,
+			SNR:       5.0,
 		},
 	}
 	return up

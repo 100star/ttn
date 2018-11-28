@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package mqtt
@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/types"
 	"github.com/TheThingsNetwork/ttn/utils/random"
 	MQTT "github.com/eclipse/paho.mqtt.golang"
@@ -143,61 +144,61 @@ func (t *token) Error() error {
 
 // DefaultClient is the default MQTT client for The Things Network
 type DefaultClient struct {
+	opts          *MQTT.ClientOptions
 	mqtt          MQTT.Client
-	ctx           Logger
+	ctx           log.Interface
 	subscriptions map[string]MQTT.MessageHandler
 }
 
 // NewClient creates a new DefaultClient
-func NewClient(ctx Logger, id, username, password string, brokers ...string) Client {
+func NewClient(ctx log.Interface, id, username, password string, brokers ...string) Client {
 	if ctx == nil {
-		ctx = &noopLogger{}
+		ctx = log.Get()
 	}
-
-	mqttOpts := MQTT.NewClientOptions()
-
-	for _, broker := range brokers {
-		mqttOpts.AddBroker(broker)
-	}
-
-	mqttOpts.SetClientID(fmt.Sprintf("%s-%s", id, random.String(16)))
-	mqttOpts.SetUsername(username)
-	mqttOpts.SetPassword(password)
-
-	// TODO: Some tuning of these values probably won't hurt:
-	mqttOpts.SetKeepAlive(30 * time.Second)
-	mqttOpts.SetPingTimeout(10 * time.Second)
-
-	mqttOpts.SetCleanSession(true)
-
-	mqttOpts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
-		ctx.Warnf("Received unhandled message: %v", msg)
-	})
-
-	var reconnecting bool
-
-	mqttOpts.SetConnectionLostHandler(func(client MQTT.Client, err error) {
-		ctx.Warnf("Disconnected (%s). Reconnecting...", err.Error())
-		reconnecting = true
-	})
 
 	ttnClient := &DefaultClient{
+		opts:          MQTT.NewClientOptions(),
 		ctx:           ctx,
 		subscriptions: make(map[string]MQTT.MessageHandler),
 	}
 
-	mqttOpts.SetOnConnectHandler(func(client MQTT.Client) {
-		ctx.Info("Connected to MQTT")
+	for _, broker := range brokers {
+		ttnClient.opts.AddBroker(broker)
+	}
+
+	ttnClient.opts.SetClientID(fmt.Sprintf("%s-%s", id, random.String(16)))
+	ttnClient.opts.SetUsername(username)
+	ttnClient.opts.SetPassword(password)
+
+	// TODO: Some tuning of these values probably won't hurt:
+	ttnClient.opts.SetKeepAlive(30 * time.Second)
+	ttnClient.opts.SetPingTimeout(10 * time.Second)
+
+	ttnClient.opts.SetCleanSession(true)
+
+	ttnClient.opts.SetDefaultPublishHandler(func(client MQTT.Client, msg MQTT.Message) {
+		ctx.Warnf("mqtt: received unhandled message: %v", msg)
+	})
+
+	var reconnecting bool
+
+	ttnClient.opts.SetConnectionLostHandler(func(client MQTT.Client, err error) {
+		ctx.Warnf("mqtt: disconnected (%s), reconnecting...", err)
+		reconnecting = true
+	})
+
+	ttnClient.opts.SetOnConnectHandler(func(client MQTT.Client) {
+		ctx.Info("mqtt: connected")
 		if reconnecting {
 			for topic, handler := range ttnClient.subscriptions {
-				ctx.Infof("Re-subscribing to topic: %s", topic)
+				ctx.Infof("mqtt: re-subscribing to topic: %s", topic)
 				ttnClient.subscribe(topic, handler)
 			}
 			reconnecting = false
 		}
 	})
 
-	ttnClient.mqtt = MQTT.NewClient(mqttOpts)
+	ttnClient.mqtt = MQTT.NewClient(ttnClient.opts)
 
 	return ttnClient
 }
@@ -219,14 +220,14 @@ func (c *DefaultClient) Connect() error {
 		token := c.mqtt.Connect()
 		finished := token.WaitTimeout(1 * time.Second)
 		if !finished {
-			c.ctx.Warn("MQTT connection took longer than expected...")
+			c.ctx.Warn("mqtt: connection took longer than expected...")
 			token.Wait()
 		}
 		err = token.Error()
 		if err == nil {
 			break
 		}
-		c.ctx.Warnf("Could not connect to MQTT Broker (%s). Retrying...", err.Error())
+		c.ctx.Warnf("mqtt: could not connect (%s), retrying...", err)
 		<-time.After(ConnectRetryDelay)
 	}
 	if err != nil {
@@ -254,7 +255,7 @@ func (c *DefaultClient) Disconnect() {
 	if !c.mqtt.IsConnected() {
 		return
 	}
-	c.ctx.Debug("Disconnecting from MQTT")
+	c.ctx.Debug("mqtt: disconnecting")
 	c.mqtt.Disconnect(25)
 }
 

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package functions
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	pb_handler "github.com/TheThingsNetwork/ttn/api/handler"
+	pb_handler "github.com/TheThingsNetwork/api/handler"
 	"github.com/robertkrimen/otto"
 
 	. "github.com/smartystreets/assertions"
@@ -32,14 +32,30 @@ func TestRunCode(t *testing.T) {
 
 	val, err := RunCode("test", code, env, time.Second, logger)
 	a.So(err, ShouldBeNil)
-	e, _ := val.Export()
-	a.So(e, ShouldEqual, foo)
-	a.So(logger.Logs, ShouldResemble, []*pb_handler.LogEntry{
+	a.So(val, ShouldEqual, foo)
+	a.So(logger.Entries(), ShouldResemble, []*pb_handler.LogEntry{
 		&pb_handler.LogEntry{
 			Function: "test",
 			Fields:   []string{`"hello"`, "10", `"baz"`},
 		},
 	})
+}
+
+func TestRunCodeThrow(t *testing.T) {
+	a := New(t)
+
+	logger := NewEntryLogger()
+	env := map[string]interface{}{}
+
+	code := `
+		(function () {
+			throw new Error("This is an error")
+			return 10
+		})()
+	`
+
+	_, err := RunCode("test", code, env, time.Second, logger)
+	a.So(err, ShouldNotBeNil)
 }
 
 var result string
@@ -71,4 +87,23 @@ func TestRunInvalidCode(t *testing.T) {
 
 	_, err := RunCode("test", code, env, time.Second, logger)
 	a.So(err, ShouldNotBeNil)
+}
+
+func TestRunDangerousCode(t *testing.T) {
+	a := New(t)
+
+	logger := NewEntryLogger()
+	env := map[string]interface{}{}
+
+	code := `
+		(function () {
+			var obj = {foo: "bar"};
+			obj.ob = obj;
+			return obj;
+		})()
+	`
+
+	out, err := RunCode("test", code, env, time.Second, logger)
+	a.So(err, ShouldNotBeNil)
+	a.So(out, ShouldBeNil)
 }

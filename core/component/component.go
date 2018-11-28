@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 // Package component contains code that is shared by all components (discovery, router, broker, networkserver, handler)
@@ -6,17 +6,20 @@ package component
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha1"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
-	"net/http"
-	"runtime"
-	"time"
 
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
+	"github.com/TheThingsNetwork/api/discovery/discoveryclient"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
 	"github.com/TheThingsNetwork/go-account-lib/claims"
 	"github.com/TheThingsNetwork/go-account-lib/tokenkey"
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
-	pb_monitor "github.com/TheThingsNetwork/ttn/api/monitor"
-	"github.com/apex/log"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
+	"github.com/TheThingsNetwork/ttn/api/pool"
 	"github.com/spf13/viper"
 	"golang.org/x/net/context" // See https://github.com/grpc/grpc-go/issues/711"
 	"google.golang.org/grpc"
@@ -26,15 +29,17 @@ import (
 // Component contains the common attributes for all TTN components
 type Component struct {
 	Config           Config
+	Pool             *pool.Pool
 	Identity         *pb_discovery.Announcement
-	Discovery        pb_discovery.Client
-	Monitors         map[string]*pb_monitor.Client
-	Ctx              log.Interface
+	Discovery        discoveryclient.Client
+	Monitor          *monitorclient.MonitorClient
+	Ctx              ttnlog.Interface
+	Context          context.Context
 	AccessToken      string
 	privateKey       *ecdsa.PrivateKey
 	tlsConfig        *tls.Config
 	TokenKeyProvider tokenkey.Provider
-	status           int64
+	status           int32
 	healthServer     *health.Server
 }
 
@@ -51,27 +56,12 @@ type ManagementInterface interface {
 }
 
 // New creates a new Component
-func New(ctx log.Interface, serviceName string, announcedAddress string) (*Component, error) {
-	go func() {
-		memstats := new(runtime.MemStats)
-		for range time.Tick(time.Minute) {
-			runtime.ReadMemStats(memstats)
-			ctx.WithFields(log.Fields{
-				"Goroutines": runtime.NumGoroutine(),
-				"Memory":     float64(memstats.Alloc) / 1000000,
-			}).Debugf("Stats")
-		}
-	}()
-
-	// Disable gRPC tracing
-	// SEE: https://github.com/grpc/grpc-go/issues/695
-	grpc.EnableTracing = false
-
+func New(ctx ttnlog.Interface, serviceName string, announcedAddress string) (*Component, error) {
 	component := &Component{
 		Config: ConfigFromViper(),
 		Ctx:    ctx,
 		Identity: &pb_discovery.Announcement{
-			Id:             viper.GetString("id"),
+			ID:             viper.GetString("id"),
 			Description:    viper.GetString("description"),
 			ServiceName:    serviceName,
 			ServiceVersion: fmt.Sprintf("%s-%s (%s)", viper.GetString("version"), viper.GetString("gitCommit"), viper.GetString("buildDate")),
@@ -79,15 +69,33 @@ func New(ctx log.Interface, serviceName string, announcedAddress string) (*Compo
 			Public:         viper.GetBool("public"),
 		},
 		AccessToken: viper.GetString("auth-token"),
+		Pool:        pool.NewPool(context.Background(), pool.DefaultDialOptions...),
+	}
+
+	info.WithLabelValues(viper.GetString("buildDate"), viper.GetString("gitCommit"), viper.GetString("id"), viper.GetString("version")).Set(1)
+
+	if err := component.initialize(); err != nil {
+		return nil, err
 	}
 
 	if err := component.InitAuth(); err != nil {
 		return nil, err
 	}
 
-	if serviceName != "discovery" {
+	if claims, err := claims.FromToken(component.TokenKeyProvider, component.AccessToken); err == nil {
+		tokenExpiry.WithLabelValues(component.Identity.ServiceName, component.Identity.ID).Set(float64(claims.ExpiresAt))
+	}
+
+	if p, _ := pem.Decode([]byte(component.Identity.Certificate)); p != nil && p.Type == "CERTIFICATE" {
+		if cert, err := x509.ParseCertificate(p.Bytes); err == nil {
+			sum := sha1.Sum(cert.Raw)
+			certificateExpiry.WithLabelValues(hex.EncodeToString(sum[:])).Set(float64(cert.NotAfter.Unix()))
+		}
+	}
+
+	if serviceName != "discovery" && serviceName != "networkserver" {
 		var err error
-		component.Discovery, err = pb_discovery.NewClient(
+		component.Discovery, err = discoveryclient.NewClient(
 			viper.GetString("discovery-address"),
 			component.Identity,
 			func() string {
@@ -100,33 +108,11 @@ func New(ctx log.Interface, serviceName string, announcedAddress string) (*Compo
 		}
 	}
 
-	if healthPort := viper.GetInt("health-port"); healthPort > 0 {
-		http.HandleFunc("/healthz", func(w http.ResponseWriter, req *http.Request) {
-			switch component.GetStatus() {
-			case StatusHealthy:
-				w.WriteHeader(200)
-				w.Write([]byte("Status is HEALTHY"))
-				return
-			case StatusUnhealthy:
-				w.WriteHeader(503)
-				w.Write([]byte("Status is UNHEALTHY"))
-				return
-			}
-		})
-		go http.ListenAndServe(fmt.Sprintf(":%d", healthPort), nil)
+	var monitorOpts []monitorclient.MonitorOption
+	for name, addr := range viper.GetStringMapString("monitor-servers") {
+		monitorOpts = append(monitorOpts, monitorclient.WithServer(name, addr))
 	}
-
-	if monitors := viper.GetStringMapString("monitor-servers"); len(monitors) != 0 {
-		component.Monitors = make(map[string]*pb_monitor.Client)
-		for name, addr := range monitors {
-			var err error
-			component.Monitors[name], err = pb_monitor.NewClient(ctx.WithField("Monitor", name), addr)
-			if err != nil {
-				// Assuming grpc.WithBlock() is not set
-				return nil, err
-			}
-		}
-	}
+	component.Monitor = monitorclient.NewMonitorClient(monitorOpts...)
 
 	return component, nil
 }

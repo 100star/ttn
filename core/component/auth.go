@@ -1,23 +1,32 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package component
 
 import (
 	"crypto/tls"
 	"fmt"
-	"regexp"
+	"io/ioutil"
+	"net/url"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
+	"github.com/TheThingsNetwork/go-account-lib/account"
+	"github.com/TheThingsNetwork/go-account-lib/auth"
 	"github.com/TheThingsNetwork/go-account-lib/cache"
 	"github.com/TheThingsNetwork/go-account-lib/claims"
 	"github.com/TheThingsNetwork/go-account-lib/keys"
-	"github.com/TheThingsNetwork/go-account-lib/oauth"
 	"github.com/TheThingsNetwork/go-account-lib/tokenkey"
-	"github.com/TheThingsNetwork/ttn/api"
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
+	api_auth "github.com/TheThingsNetwork/go-utils/grpc/auth"
+	"github.com/TheThingsNetwork/go-utils/grpc/ttnctx"
+	"github.com/TheThingsNetwork/ttn/api/pool"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"github.com/TheThingsNetwork/ttn/utils/security"
 	jwt "github.com/dgrijalva/jwt-go"
 	"golang.org/x/net/context"
-	"google.golang.org/grpc/metadata"
 )
 
 // InitAuth initializes Auth functionality
@@ -25,6 +34,8 @@ func (c *Component) InitAuth() error {
 	inits := []func() error{
 		c.initAuthServers,
 		c.initKeyPair,
+		c.initRoots,
+		c.initBgCtx,
 	}
 	if c.Config.UseTLS {
 		inits = append(inits, c.initTLS)
@@ -46,40 +57,49 @@ type authServer struct {
 }
 
 func parseAuthServer(str string) (srv authServer, err error) {
-	matches := AuthServerRegex.FindStringSubmatch(str)
-	if len(matches) != 5 || matches[4] == "" {
-		return srv, ErrNoAuthServerRegexMatch
+	url, err := url.Parse(str)
+	if err != nil {
+		return srv, err
 	}
-	return authServer{
-		url:      matches[1] + matches[4],
-		username: matches[2],
-		password: matches[3],
-	}, nil
+	srv.url = fmt.Sprintf("%s://%s", url.Scheme, url.Host)
+	if url.User != nil {
+		srv.username = url.User.Username()
+		srv.password, _ = url.User.Password()
+	}
+	return srv, nil
 }
-
-// AuthServerRegex gives the format of auth server configuration.
-// Format: [username[:password]@]domain
-// - usernames can contain lowercase letters, numbers, underscores and dashes
-// - passwords can contain uppercase and lowercase letters, numbers, and special characters
-// - domains can be http/https and can contain lowercase letters, numbers, dashes and dots
-var AuthServerRegex = regexp.MustCompile(`^(http[s]?://)(?:([0-9a-z_-]+)(?::([0-9A-Za-z-!"#$%&'()*+,.:;<=>?@[\]^_{|}~]+))?@)?([0-9a-z.-]+)/?$`)
-
-// ErrNoAuthServerRegexMatch is returned when an auth server
-var ErrNoAuthServerRegexMatch = errors.New("Account server did not match AuthServerRegex")
 
 func (c *Component) initAuthServers() error {
 	urlMap := make(map[string]string)
+	funcMap := make(map[string]tokenkey.TokenFunc)
+	var httpProvider tokenkey.Provider
 	for id, url := range c.Config.AuthServers {
+		id, url := id, url // deliberately shadow these
+		if strings.HasPrefix(url, "file://") {
+			file := strings.TrimPrefix(url, "file://")
+			contents, err := ioutil.ReadFile(path.Clean(file))
+			if err != nil {
+				return err
+			}
+			funcMap[id] = func(renew bool) (*tokenkey.TokenKey, error) {
+				return &tokenkey.TokenKey{Algorithm: "ES256", Key: string(contents)}, nil
+			}
+			continue
+		}
 		srv, err := parseAuthServer(url)
 		if err != nil {
 			return err
 		}
 		urlMap[id] = srv.url
+		funcMap[id] = func(renew bool) (*tokenkey.TokenKey, error) {
+			return httpProvider.Get(id, renew)
+		}
 	}
-	c.TokenKeyProvider = tokenkey.HTTPProvider(
+	httpProvider = tokenkey.HTTPProvider(
 		urlMap,
 		cache.WriteTroughCacheWithFormat(c.Config.KeyDir, "auth-%s.pub"),
 	)
+	c.TokenKeyProvider = tokenkey.FuncProvider(funcMap)
 	return nil
 }
 
@@ -110,6 +130,13 @@ func (c *Component) initKeyPair() error {
 	pubPEM, _ := security.PublicPEM(priv)
 	c.Identity.PublicKey = string(pubPEM)
 
+	if c.Pool != nil {
+		c.Pool.AddDialOption(api_auth.WithTokenFunc("target-id", func(_ string) string {
+			token, _ := c.BuildJWT()
+			return token
+		}).DialOption())
+	}
+
 	return nil
 }
 
@@ -126,42 +153,79 @@ func (c *Component) initTLS() error {
 		return err
 	}
 
-	c.tlsConfig = &tls.Config{Certificates: []tls.Certificate{cer}}
+	c.tlsConfig = &tls.Config{
+		Certificates: []tls.Certificate{cer},
+	}
+	switch c.Config.MinTLSVersion {
+	case "":
+		// use Go default
+	case "1.0":
+		c.tlsConfig.MinVersion = tls.VersionTLS10
+	case "1.1":
+		c.tlsConfig.MinVersion = tls.VersionTLS11
+	case "1.2":
+		c.tlsConfig.MinVersion = tls.VersionTLS12
+	default:
+		c.Ctx.Warnf("Could not recognize TLS version %s", c.Config.MinTLSVersion)
+	}
+
+	return nil
+}
+
+func (c *Component) initRoots() error {
+	path := filepath.Clean(c.Config.KeyDir + "/ca.cert")
+	cert, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	if !pool.RootCAs.AppendCertsFromPEM(cert) {
+		return fmt.Errorf("Could not add root certificates from %s", path)
+	}
+	return nil
+}
+
+func (c *Component) initBgCtx() error {
+	ctx := context.Background()
+	if c.Identity != nil {
+		ctx = ttnctx.OutgoingContextWithID(ctx, c.Identity.ID)
+		ctx = ttnctx.OutgoingContextWithServiceInfo(ctx, c.Identity.ServiceName, c.Identity.ServiceVersion, c.Identity.NetAddress)
+	}
+	c.Context = ctx
+	if c.Pool != nil {
+		c.Pool.SetContext(c.Context)
+	}
 	return nil
 }
 
 // BuildJWT builds a short-lived JSON Web Token for this component
 func (c *Component) BuildJWT() (string, error) {
-	if c.privateKey != nil {
-		privPEM, err := security.PrivatePEM(c.privateKey)
-		if err != nil {
-			return "", err
-		}
-		return security.BuildJWT(c.Identity.Id, 20*time.Second, privPEM)
+	if c.privateKey == nil {
+		return "", nil
 	}
-	return "", nil
+	if c.Identity == nil {
+		return "", nil
+	}
+	privPEM, err := security.PrivatePEM(c.privateKey)
+	if err != nil {
+		return "", err
+	}
+	return security.BuildJWT(c.Identity.ID, 20*time.Second, privPEM)
 }
 
 // GetContext returns a context for outgoing RPC request. If token is "", this function will generate a short lived token from the component
 func (c *Component) GetContext(token string) context.Context {
-	var serviceName, id, netAddress string
-	if c.Identity != nil {
-		serviceName = c.Identity.ServiceName
-		id = c.Identity.Id
-		if token == "" {
-			token, _ = c.BuildJWT()
-		}
-		netAddress = c.Identity.NetAddress
+	if c.Context == nil {
+		c.initBgCtx()
 	}
-	md := metadata.Pairs(
-		"service-name", serviceName,
-		"id", id,
-		"token", token,
-		"net-address", netAddress,
-	)
-	ctx := metadata.NewContext(context.Background(), md)
+	ctx := c.Context
+	if token == "" && c.Identity != nil {
+		token, _ = c.BuildJWT()
+	}
+	ctx = ttnctx.OutgoingContextWithToken(ctx, token)
 	return ctx
 }
+
+var oauthCache = cache.MemoryCache()
 
 // ExchangeAppKeyForToken enables authentication with the App Access Key
 func (c *Component) ExchangeAppKeyForToken(appID, key string) (string, error) {
@@ -176,20 +240,33 @@ func (c *Component) ExchangeAppKeyForToken(appID, key string) (string, error) {
 	}
 	issuer, ok := c.Config.AuthServers[issuerID]
 	if !ok {
-		return "", fmt.Errorf("Auth server %s not registered", issuer)
+		return "", fmt.Errorf("Auth server \"%s\" not registered", issuerID)
 	}
 
-	srv, _ := parseAuthServer(issuer)
-
-	oauth := oauth.OAuth(srv.url, &oauth.Client{
-		ID:     srv.username,
-		Secret: srv.password,
-	})
-
-	token, err := oauth.ExchangeAppKeyForToken(appID, key)
+	token, err := getTokenFromCache(oauthCache, appID, key)
 	if err != nil {
 		return "", err
 	}
+
+	if token != nil {
+		return token.AccessToken, nil
+	}
+
+	srv, _ := parseAuthServer(issuer)
+	acc := account.New(srv.url)
+
+	if srv.username != "" {
+		acc = acc.WithAuth(auth.BasicAuth(srv.username, srv.password))
+	} else {
+		acc = acc.WithAuth(auth.AccessToken(c.AccessToken))
+	}
+
+	token, err = acc.ExchangeAppKeyForToken(appID, key)
+	if err != nil {
+		return "", err
+	}
+
+	saveTokenToCache(oauthCache, appID, key, token)
 
 	return token.AccessToken, nil
 }
@@ -202,43 +279,28 @@ func (c *Component) ValidateNetworkContext(ctx context.Context) (component *pb_d
 		}
 	}()
 
-	md, ok := metadata.FromContext(ctx)
-	if !ok {
-		err = errors.NewErrInternal("Could not get metadata from context")
-		return
-	}
-	var id, serviceName, token string
-	if ids, ok := md["id"]; ok && len(ids) == 1 {
-		id = ids[0]
-	}
-	if id == "" {
-		err = errors.NewErrInvalidArgument("Metadata", "id missing")
-		return
-	}
-	if serviceNames, ok := md["service-name"]; ok && len(serviceNames) == 1 {
-		serviceName = serviceNames[0]
-	}
-	if serviceName == "" {
-		err = errors.NewErrInvalidArgument("Metadata", "service-name missing")
-		return
-	}
-	if tokens, ok := md["token"]; ok && len(tokens) == 1 {
-		token = tokens[0]
+	id, err := ttnctx.IDFromIncomingContext(ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	var announcement *pb_discovery.Announcement
-	announcement, err = c.Discover(serviceName, id)
+	serviceName, _, _, _ := ttnctx.ServiceInfoFromIncomingContext(ctx)
+	if serviceName == "" {
+		return nil, errors.NewErrInvalidArgument("Metadata", "service-name missing")
+	}
+
+	announcement, err := c.Discover(serviceName, id)
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	if announcement.PublicKey == "" {
 		return announcement, nil
 	}
 
-	if token == "" {
-		err = errors.NewErrInvalidArgument("Metadata", "token missing")
-		return
+	token, err := ttnctx.TokenFromIncomingContext(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	var claims *jwt.StandardClaims
@@ -247,7 +309,11 @@ func (c *Component) ValidateNetworkContext(ctx context.Context) (component *pb_d
 		return
 	}
 	if claims.Issuer != id {
-		err = errors.NewErrInvalidArgument("Metadata", "token was issued by different component id")
+		err = errors.NewErrPermissionDenied(fmt.Sprintf("Token was issued by %s, not by %s", claims.Issuer, id))
+		return
+	}
+	if claims.Subject != "" && claims.Subject != claims.Issuer && claims.Subject != c.Identity.ID {
+		err = errors.NewErrPermissionDenied(fmt.Sprintf("Token was issued to connect with %s, not with %s", claims.Subject, c.Identity.ID))
 		return
 	}
 
@@ -256,7 +322,7 @@ func (c *Component) ValidateNetworkContext(ctx context.Context) (component *pb_d
 
 // ValidateTTNAuthContext gets a token from the context and validates it
 func (c *Component) ValidateTTNAuthContext(ctx context.Context) (*claims.Claims, error) {
-	token, err := api.TokenFromContext(ctx)
+	token, err := ttnctx.TokenFromIncomingContext(ctx)
 	if err != nil {
 		return nil, err
 	}

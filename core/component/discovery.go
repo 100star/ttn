@@ -1,7 +1,10 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package component
 
 import (
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 )
 
@@ -16,7 +19,7 @@ func (c *Component) Discover(serviceName, id string) (*pb_discovery.Announcement
 
 // Announce the component to TTN discovery
 func (c *Component) Announce() error {
-	if c.Identity.Id == "" {
+	if c.Identity.ID == "" {
 		return errors.NewErrInvalidArgument("Component ID", "can not be empty")
 	}
 	err := c.Discovery.Announce(c.AccessToken)

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package amqp
@@ -19,7 +19,7 @@ func (c *DefaultPublisher) PublishDownlink(dataDown types.DownlinkMessage) error
 	key := DeviceKey{dataDown.AppID, dataDown.DevID, DeviceDownlink, ""}
 	msg, err := json.Marshal(dataDown)
 	if err != nil {
-		return fmt.Errorf("Unable to marshal the message payload")
+		return fmt.Errorf("Unable to marshal the message payload: %s", err)
 	}
 	return c.publish(key.String(), msg, time.Now())
 }
@@ -42,7 +42,6 @@ func (s *DefaultSubscriber) SubscribeDeviceDownlink(appID, devID string, handler
 			}
 			handler(s, dataDown.AppID, dataDown.DevID, *dataDown)
 			delivery.Ack(false)
-			break
 		}
 	}()
 

@@ -1,3 +1,6 @@
+// Copyright © 2017 The Things Network
+// Use of this source code is governed by the MIT license that can be found in the LICENSE file.
+
 package security
 
 import (
@@ -48,7 +51,7 @@ func GenerateKeypair(location string) error {
 }
 
 // GenerateCert generates a certificate for the given hostnames in the given location
-func GenerateCert(location string, hostnames ...string) error {
+func GenerateCert(location string, commonName string, hostnames ...string) error {
 	privKey, err := LoadKeypair(location)
 	if err != nil {
 		return err
@@ -65,12 +68,13 @@ func GenerateCert(location string, hostnames ...string) error {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
+			CommonName:   commonName,
 			Organization: []string{"The Things Network"},
 		},
 		IsCA:                  true,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}

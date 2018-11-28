@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package util
@@ -9,11 +9,11 @@ import (
 	"os"
 	"path"
 
-	yaml "gopkg.in/yaml.v2"
-
+	"github.com/TheThingsNetwork/api"
+	ttnlog "github.com/TheThingsNetwork/go-utils/log"
 	"github.com/TheThingsNetwork/ttn/core/types"
-	"github.com/apex/log"
 	"github.com/spf13/viper"
+	yaml "gopkg.in/yaml.v2"
 )
 
 const (
@@ -138,7 +138,7 @@ func setData(file, key string, data interface{}) error {
 }
 
 // GetAppEUI returns the AppEUI that must be set in the command options or config
-func GetAppEUI(ctx log.Interface) types.AppEUI {
+func GetAppEUI(ctx ttnlog.Interface) types.AppEUI {
 	appEUIString := viper.GetString("app-eui")
 	if appEUIString == "" {
 		appData := readData(appFilename)
@@ -160,8 +160,8 @@ func GetAppEUI(ctx log.Interface) types.AppEUI {
 	return eui
 }
 
-// SetApp stores the app EUI preference
-func SetAppEUI(ctx log.Interface, appEUI types.AppEUI) {
+// SetAppEUI stores the app EUI preference
+func SetAppEUI(ctx ttnlog.Interface, appEUI types.AppEUI) {
 	err := setData(appFilename, euiKey, appEUI.String())
 	if err != nil {
 		ctx.WithError(err).Fatal("Could not save app EUI")
@@ -169,7 +169,7 @@ func SetAppEUI(ctx log.Interface, appEUI types.AppEUI) {
 }
 
 // GetAppID returns the AppID that must be set in the command options or config
-func GetAppID(ctx log.Interface) string {
+func GetAppID(ctx ttnlog.Interface) string {
 	appID := viper.GetString("app-id")
 	if appID == "" {
 		appData := readData(appFilename)
@@ -181,13 +181,18 @@ func GetAppID(ctx log.Interface) string {
 	}
 
 	if appID == "" {
-		ctx.Fatal("Missing AppID. You should select an application to use with \"ttnctl applications select\"")
+		ctx.Fatal("Missing Application ID. You should select an application to use with \"ttnctl applications select\"")
 	}
+
+	if err := api.NotEmptyAndValidID(appID, "Application ID"); err != nil {
+		ctx.Fatal(err.Error())
+	}
+
 	return appID
 }
 
 // SetApp stores the app ID and app EUI preferences
-func SetApp(ctx log.Interface, appID string, appEUI types.AppEUI) {
+func SetApp(ctx ttnlog.Interface, appID string, appEUI types.AppEUI) {
 	config := readData(appFilename)
 	config[idKey] = appID
 	config[euiKey] = appEUI.String()

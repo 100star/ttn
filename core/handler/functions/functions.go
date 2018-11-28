@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package functions
@@ -13,8 +13,9 @@ import (
 
 var errTimeOutExceeded = errors.NewErrInternal("Code has been running to long")
 
-func RunCode(name, code string, env map[string]interface{}, timeout time.Duration, logger Logger) (otto.Value, error) {
+func RunCode(name, code string, env map[string]interface{}, timeout time.Duration, logger Logger) (val interface{}, err error) {
 	vm := otto.New()
+	vm.SetStackDepthLimit(32)
 
 	// load the environment
 	for key, val := range env {
@@ -32,22 +33,19 @@ func RunCode(name, code string, env map[string]interface{}, timeout time.Duratio
 	})
 	vm.Run("console.log = __log")
 
-	var value otto.Value
-	var err error
-
 	start := time.Now()
 
 	defer func() {
 		duration := time.Since(start)
 		if caught := recover(); caught != nil {
-			if caught == errTimeOutExceeded {
-				value = otto.Value{}
-				err = errors.NewErrInternal(fmt.Sprintf("Interrupted javascript execution after %v", duration))
-				return
+			val = nil
+			switch {
+			case caught == errTimeOutExceeded:
+				err = errors.NewErrInternal(fmt.Sprintf("Interrupted javascript execution for %s after %v", name, duration))
+			default:
+				err = errors.NewErrInternal(fmt.Sprintf("Fatal error in %s: %s", name, caught))
 			}
-			// if this is not the our timeout interrupt, raise the panic again
-			// so someone else can handle it
-			panic(caught)
+			return
 		}
 	}()
 
@@ -59,7 +57,28 @@ func RunCode(name, code string, env map[string]interface{}, timeout time.Duratio
 			panic(errTimeOutExceeded)
 		}
 	}()
-	val, err := vm.Run(code)
 
-	return val, err
+	oVal, err := vm.Run(code)
+	if err != nil {
+		return nil, errors.NewErrInternal(fmt.Sprintf("%s threw error: %s", name, err))
+	}
+
+	switch {
+	case oVal.IsBoolean():
+		return oVal.ToBoolean()
+	case oVal.IsNull(), oVal.IsUndefined():
+		return nil, nil
+	case oVal.IsNumber():
+		f, _ := oVal.ToFloat()
+		if float64(int64(f)) == f {
+			return oVal.ToInteger()
+		}
+		return f, nil
+	case oVal.IsObject():
+		return oVal.Export()
+	case oVal.IsString():
+		return oVal.ToString()
+	}
+
+	return nil, errors.NewErrInternal(fmt.Sprintf("%s return value invalid", name))
 }

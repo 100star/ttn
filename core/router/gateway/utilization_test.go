@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package gateway
@@ -6,31 +6,31 @@ package gateway
 import (
 	"testing"
 
-	"github.com/TheThingsNetwork/ttn/api/gateway"
-	pb_protocol "github.com/TheThingsNetwork/ttn/api/protocol"
-	pb_lorawan "github.com/TheThingsNetwork/ttn/api/protocol/lorawan"
-	pb "github.com/TheThingsNetwork/ttn/api/router"
+	"github.com/TheThingsNetwork/api/gateway"
+	pb_protocol "github.com/TheThingsNetwork/api/protocol"
+	pb_lorawan "github.com/TheThingsNetwork/api/protocol/lorawan"
+	pb "github.com/TheThingsNetwork/api/router"
 	. "github.com/smartystreets/assertions"
 )
 
 func buildUplink(freq uint64) *pb.UplinkMessage {
-	return &pb.UplinkMessage{Payload: make([]byte, 10), ProtocolMetadata: &pb_protocol.RxMetadata{
-		Protocol: &pb_protocol.RxMetadata_Lorawan{Lorawan: &pb_lorawan.Metadata{
+	return &pb.UplinkMessage{Payload: make([]byte, 10), ProtocolMetadata: pb_protocol.RxMetadata{
+		Protocol: &pb_protocol.RxMetadata_LoRaWAN{LoRaWAN: &pb_lorawan.Metadata{
 			DataRate:   "SF7BW125",
 			CodingRate: "4/5",
 		}},
-	}, GatewayMetadata: &gateway.RxMetadata{
+	}, GatewayMetadata: gateway.RxMetadata{
 		Frequency: freq,
 	}}
 }
 
 func buildDownlink(freq uint64) *pb.DownlinkMessage {
-	return &pb.DownlinkMessage{Payload: make([]byte, 10), ProtocolConfiguration: &pb_protocol.TxConfiguration{
-		Protocol: &pb_protocol.TxConfiguration_Lorawan{Lorawan: &pb_lorawan.TxConfiguration{
+	return &pb.DownlinkMessage{Payload: make([]byte, 10), ProtocolConfiguration: pb_protocol.TxConfiguration{
+		Protocol: &pb_protocol.TxConfiguration_LoRaWAN{LoRaWAN: &pb_lorawan.TxConfiguration{
 			DataRate:   "SF7BW125",
 			CodingRate: "4/5",
 		}},
-	}, GatewayConfiguration: &gateway.TxConfiguration{
+	}, GatewayConfiguration: gateway.TxConfiguration{
 		Frequency: freq,
 	}}
 }

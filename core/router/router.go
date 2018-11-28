@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package router
@@ -7,15 +7,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TheThingsNetwork/ttn/api"
-	pb_broker "github.com/TheThingsNetwork/ttn/api/broker"
-	pb_discovery "github.com/TheThingsNetwork/ttn/api/discovery"
-	pb_gateway "github.com/TheThingsNetwork/ttn/api/gateway"
-	pb_monitor "github.com/TheThingsNetwork/ttn/api/monitor"
-	pb "github.com/TheThingsNetwork/ttn/api/router"
+	pb_broker "github.com/TheThingsNetwork/api/broker"
+	"github.com/TheThingsNetwork/api/broker/brokerclient"
+	pb_discovery "github.com/TheThingsNetwork/api/discovery"
+	pb_gateway "github.com/TheThingsNetwork/api/gateway"
+	"github.com/TheThingsNetwork/api/monitor/monitorclient"
+	pb "github.com/TheThingsNetwork/api/router"
+	"github.com/TheThingsNetwork/go-utils/grpc/auth"
+	"github.com/TheThingsNetwork/go-utils/grpc/ttnctx"
 	"github.com/TheThingsNetwork/ttn/core/component"
 	"github.com/TheThingsNetwork/ttn/core/router/gateway"
-	"github.com/TheThingsNetwork/ttn/utils/errors"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
 )
 
 // Router component
@@ -30,9 +33,9 @@ type Router interface {
 	// Handle a downlink message
 	HandleDownlink(message *pb_broker.DownlinkMessage) error
 	// Subscribe to downlink messages
-	SubscribeDownlink(gatewayID string) (<-chan *pb.DownlinkMessage, error)
+	SubscribeDownlink(gatewayID string, subscriptionID string) (<-chan *pb.DownlinkMessage, error)
 	// Unsubscribe from downlink messages
-	UnsubscribeDownlink(gatewayID string) error
+	UnsubscribeDownlink(gatewayID string, subscriptionID string) error
 	// Handle a device activation
 	HandleActivation(gatewayID string, activation *pb.DeviceActivationRequest) (*pb.DeviceActivationResponse, error)
 
@@ -40,9 +43,11 @@ type Router interface {
 }
 
 type broker struct {
-	client   pb_broker.BrokerClient
-	uplink   chan *pb_broker.UplinkMessage
-	downlink chan *pb_broker.DownlinkMessage
+	conn        *grpc.ClientConn
+	association brokerclient.RouterStream
+	client      pb_broker.BrokerClient
+	uplink      chan *pb_broker.UplinkMessage
+	downlink    chan *pb_broker.DownlinkMessage
 }
 
 // NewRouter creates a new Router
@@ -55,10 +60,12 @@ func NewRouter() Router {
 
 type router struct {
 	*component.Component
-	gateways     map[string]*gateway.Gateway
-	gatewaysLock sync.RWMutex
-	brokers      map[string]*broker
-	brokersLock  sync.RWMutex
+	gateways      map[string]*gateway.Gateway
+	gatewaysLock  sync.RWMutex
+	brokers       map[string]*broker
+	brokersLock   sync.RWMutex
+	status        *status
+	monitorStream monitorclient.Stream
 }
 
 func (r *router) tickGateways() {
@@ -71,6 +78,7 @@ func (r *router) tickGateways() {
 
 func (r *router) Init(c *component.Component) error {
 	r.Component = c
+	r.InitStatus()
 	err := r.Component.UpdateTokenKey()
 	if err != nil {
 		return err
@@ -87,10 +95,20 @@ func (r *router) Init(c *component.Component) error {
 		}
 	}()
 	r.Component.SetStatus(component.StatusHealthy)
+	if r.Component.Monitor != nil {
+		r.monitorStream = r.Component.Monitor.RouterClient(r.Context, grpc.PerRPCCredentials(auth.WithStaticToken(r.AccessToken)))
+	}
 	return nil
 }
 
-func (r *router) Shutdown() {}
+func (r *router) Shutdown() {
+	r.brokersLock.Lock()
+	defer r.brokersLock.Unlock()
+	for _, broker := range r.brokers {
+		broker.association.Close()
+		broker.conn.Close()
+	}
+}
 
 // getGateway gets or creates a Gateway
 func (r *router) getGateway(id string) *gateway.Gateway {
@@ -108,14 +126,20 @@ func (r *router) getGateway(id string) *gateway.Gateway {
 	gtw, ok = r.gateways[id]
 	if !ok {
 		gtw = gateway.NewGateway(r.Ctx, id)
-
-		if r.Component.Monitors != nil {
-			gtw.Monitors = make(map[string]pb_monitor.GatewayClient)
-			for name, cl := range r.Component.Monitors {
-				gtw.Monitors[name] = cl.GatewayClient(gtw.ID)
-			}
+		ctx := context.Background()
+		ctx = ttnctx.OutgoingContextWithID(ctx, id)
+		if r.Identity != nil {
+			ctx = ttnctx.OutgoingContextWithServiceInfo(ctx, r.Identity.ServiceName, r.Identity.ServiceVersion, r.Identity.NetAddress)
 		}
-
+		gtw.MonitorStream = r.Component.Monitor.GatewayClient(
+			ctx,
+			grpc.PerRPCCredentials(auth.WithTokenFunc("id", func(ctxID string) string {
+				if ctxID != id {
+					return ""
+				}
+				return gtw.Token()
+			})),
+		)
 		r.gateways[id] = gtw
 	}
 
@@ -127,79 +151,59 @@ func (r *router) getGateway(id string) *gateway.Gateway {
 func (r *router) getBroker(brokerAnnouncement *pb_discovery.Announcement) (*broker, error) {
 	// We're going to be optimistic and guess that the broker is already active
 	r.brokersLock.RLock()
-	brk, ok := r.brokers[brokerAnnouncement.Id]
+	brk, ok := r.brokers[brokerAnnouncement.ID]
 	r.brokersLock.RUnlock()
 	if ok {
 		return brk, nil
 	}
+
 	// If it doesn't we still have to lock
 	r.brokersLock.Lock()
 	defer r.brokersLock.Unlock()
-	if _, ok := r.brokers[brokerAnnouncement.Id]; !ok {
+	if _, ok := r.brokers[brokerAnnouncement.ID]; !ok {
+		var err error
+
+		brk := &broker{
+			uplink: make(chan *pb_broker.UplinkMessage),
+		}
 
 		// Connect to the server
-		conn, err := brokerAnnouncement.Dial()
+		brk.conn, err = brokerAnnouncement.Dial(r.Pool)
 		if err != nil {
 			return nil, err
 		}
-		client := pb_broker.NewBrokerClient(conn)
 
-		brk := &broker{
-			client:   client,
-			uplink:   make(chan *pb_broker.UplinkMessage),
-			downlink: make(chan *pb_broker.DownlinkMessage),
-		}
+		// Set up the non-streaming client
+		brk.client = pb_broker.NewBrokerClient(brk.conn)
+
+		// Set up the streaming client
+		config := brokerclient.DefaultClientConfig
+		config.BackgroundContext = r.Component.Context
+		cli := brokerclient.NewClient(config)
+		cli.AddServer(brokerAnnouncement.ID, brk.conn)
+		brk.association = cli.NewRouterStreams(r.Identity.ID, "")
 
 		go func() {
-			numErrs := 0
+			downlinkStream := brk.association.Downlink()
+			refreshDownlinkStream := time.NewTicker(time.Second)
 			for {
-				association, err := client.Associate(r.Component.GetContext(""))
-				if err != nil {
-					numErrs++
-					<-time.After(api.Backoff)
-					if numErrs > 10 {
-						break
-					}
-					continue
-				}
-
-				errChan := make(chan error)
-
-				go func() {
-					for {
-						downlink, err := association.Recv()
-						if err != nil {
-							errChan <- err
-							return
-						}
-						brk.downlink <- downlink
-					}
-				}()
-
-			associationLoop:
-				for {
-					select {
-					case err := <-errChan:
-						r.Ctx.WithError(errors.FromGRPCError(err)).Error("Error in Broker associate")
-						break associationLoop
-					case uplink := <-brk.uplink:
-						err := association.Send(uplink)
-						if err != nil {
-							errChan <- err
-						}
-					case downlink := <-brk.downlink:
-						go r.HandleDownlink(downlink)
+				select {
+				case message := <-brk.uplink:
+					brk.association.Uplink(message)
+				case <-refreshDownlinkStream.C:
+					downlinkStream = brk.association.Downlink()
+				case message, ok := <-downlinkStream:
+					if ok {
+						go r.HandleDownlink(message)
+					} else {
+						r.Ctx.WithField("broker", brokerAnnouncement.ID).Error("Downlink Stream errored")
+						downlinkStream = nil
 					}
 				}
-
 			}
-			conn.Close()
-			r.brokersLock.Lock()
-			defer r.brokersLock.Unlock()
-			delete(r.brokers, brokerAnnouncement.Id)
 		}()
 
-		r.brokers[brokerAnnouncement.Id] = brk
+		r.brokers[brokerAnnouncement.ID] = brk
 	}
-	return r.brokers[brokerAnnouncement.Id], nil
+	return r.brokers[brokerAnnouncement.ID], nil
 }

@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package mqtt
@@ -16,8 +16,6 @@ type ActivationHandler func(client Client, appID string, devID string, req types
 func (c *DefaultClient) PublishActivation(activation types.Activation) Token {
 	appID := activation.AppID
 	devID := activation.DevID
-	activation.AppID = ""
-	activation.DevID = ""
 	return c.PublishDeviceEvent(appID, devID, types.ActivationEvent, activation)
 }
 
@@ -26,7 +24,7 @@ func (c *DefaultClient) SubscribeDeviceActivations(appID string, devID string, h
 	return c.SubscribeDeviceEvents(appID, devID, types.ActivationEvent, func(_ Client, appID string, devID string, _ types.EventType, payload []byte) {
 		activation := types.Activation{}
 		if err := json.Unmarshal(payload, &activation); err != nil {
-			c.ctx.Warnf("Could not unmarshal activation (%s).", err.Error())
+			c.ctx.Warnf("mqtt: could not unmarshal activation: %s", err)
 			return
 		}
 		activation.AppID = appID

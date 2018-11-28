@@ -1,12 +1,14 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package device
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
+	"github.com/TheThingsNetwork/ttn/core/handler/device/migrate"
 	"github.com/TheThingsNetwork/ttn/core/storage"
 	"github.com/TheThingsNetwork/ttn/utils/errors"
 	"gopkg.in/redis.v5"
@@ -14,15 +16,34 @@ import (
 
 // Store interface for Devices
 type Store interface {
-	List() ([]*Device, error)
-	ListForApp(appID string) ([]*Device, error)
+	Count() (int, error)
+	CountForApp(appID string) (int, error)
+	List(opts *storage.ListOptions) ([]*Device, error)
+	ListForApp(appID string, opts *storage.ListOptions) ([]*Device, error)
 	Get(appID, devID string) (*Device, error)
+	DownlinkQueue(appID, devID string) (DownlinkQueue, error)
 	Set(new *Device, properties ...string) (err error)
 	Delete(appID, devID string) error
+	AddBuiltinAttribute(attr ...string)
 }
 
 const defaultRedisPrefix = "handler"
 const redisDevicePrefix = "device"
+const redisDownlinkQueuePrefix = "downlink"
+
+var defaultDeviceAttributes = []string{
+	"ttn-brand",
+	"ttn-model",
+	"ttn-version",
+	"ttn-antenna",
+	"ttn-module-type",
+}
+
+const (
+	maxDeviceAttributeKeyLength   = 64
+	maxDeviceAttributeValueLength = 64
+	maxDeviceAttributes           = 5
+)
 
 // NewRedisDeviceStore creates a new Redis-based Device store
 func NewRedisDeviceStore(client *redis.Client, prefix string) *RedisDeviceStore {
@@ -31,42 +52,84 @@ func NewRedisDeviceStore(client *redis.Client, prefix string) *RedisDeviceStore 
 	}
 	store := storage.NewRedisMapStore(client, prefix+":"+redisDevicePrefix)
 	store.SetBase(Device{}, "")
-	return &RedisDeviceStore{
-		store: store,
+	for v, f := range migrate.DeviceMigrations(prefix) {
+		store.AddMigration(v, f)
 	}
+	queues := storage.NewRedisQueueStore(client, prefix+":"+redisDownlinkQueuePrefix)
+	s := &RedisDeviceStore{
+		client: client,
+		prefix: prefix,
+		store:  store,
+		queues: queues,
+	}
+	s.AddBuiltinAttribute(defaultDeviceAttributes...)
+	countStore(s)
+	return s
 }
 
 // RedisDeviceStore stores Devices in Redis.
 // - Devices are stored as a Hash
 type RedisDeviceStore struct {
-	store *storage.RedisMapStore
+	prefix           string
+	client           *redis.Client
+	store            *storage.RedisMapStore
+	queues           *storage.RedisQueueStore
+	builtinAttibutes []string // sorted
+}
+
+var listCacheTTL = 5 * time.Minute
+
+func (s *RedisDeviceStore) listResultCacheKey(appID string) string {
+	return fmt.Sprintf("%s:_index_:%s", s.prefix, appID)
+}
+
+// Count all devices in the store
+func (s *RedisDeviceStore) Count() (int, error) {
+	opts := new(storage.ListOptions)
+	opts.UseCache(s.listResultCacheKey("_all_"), listCacheTTL)
+	return s.store.Count("", opts)
+}
+
+// CountForApp counts all devices for an Application
+func (s *RedisDeviceStore) CountForApp(appID string) (int, error) {
+	opts := new(storage.ListOptions)
+	opts.UseCache(s.listResultCacheKey(appID), listCacheTTL)
+	return s.store.Count(fmt.Sprintf("%s:*", appID), opts)
 }
 
 // List all Devices
-func (s *RedisDeviceStore) List() ([]*Device, error) {
-	devicesI, err := s.store.List("", nil)
+func (s *RedisDeviceStore) List(opts *storage.ListOptions) ([]*Device, error) {
+	if opts == nil {
+		opts = new(storage.ListOptions)
+	}
+	opts.UseCache(s.listResultCacheKey("_all_"), listCacheTTL)
+	devicesI, err := s.store.List("", opts)
 	if err != nil {
 		return nil, err
 	}
-	devices := make([]*Device, 0, len(devicesI))
-	for _, deviceI := range devicesI {
+	devices := make([]*Device, len(devicesI))
+	for i, deviceI := range devicesI {
 		if device, ok := deviceI.(Device); ok {
-			devices = append(devices, &device)
+			devices[i] = &device
 		}
 	}
 	return devices, nil
 }
 
 // ListForApp lists all devices for a specific Application
-func (s *RedisDeviceStore) ListForApp(appID string) ([]*Device, error) {
-	devicesI, err := s.store.List(fmt.Sprintf("%s:*", appID), nil)
+func (s *RedisDeviceStore) ListForApp(appID string, opts *storage.ListOptions) ([]*Device, error) {
+	if opts == nil {
+		opts = new(storage.ListOptions)
+	}
+	opts.UseCache(s.listResultCacheKey(appID), listCacheTTL)
+	devicesI, err := s.store.List(fmt.Sprintf("%s:*", appID), opts)
 	if err != nil {
 		return nil, err
 	}
-	devices := make([]*Device, 0, len(devicesI))
-	for _, deviceI := range devicesI {
+	devices := make([]*Device, len(devicesI))
+	for i, deviceI := range devicesI {
 		if device, ok := deviceI.(Device); ok {
-			devices = append(devices, &device)
+			devices[i] = &device
 		}
 	}
 	return devices, nil
@@ -84,28 +147,65 @@ func (s *RedisDeviceStore) Get(appID, devID string) (*Device, error) {
 	return nil, errors.New("Database did not return a Device")
 }
 
+// DownlinkQueue for a specific Device
+func (s *RedisDeviceStore) DownlinkQueue(appID, devID string) (DownlinkQueue, error) {
+	return &RedisDownlinkQueue{
+		appID:  appID,
+		devID:  devID,
+		queues: s.queues,
+	}, nil
+}
+
 // Set a new Device or update an existing one
 func (s *RedisDeviceStore) Set(new *Device, properties ...string) (err error) {
-
 	now := time.Now()
 	new.UpdatedAt = now
-
 	key := fmt.Sprintf("%s:%s", new.AppID, new.DevID)
-	if new.old != nil {
-		err = s.store.Update(key, *new, properties...)
-	} else {
+	if new.old == nil {
 		new.CreatedAt = now
-		err = s.store.Create(key, *new, properties...)
 	}
+	customAttributeSlots := maxDeviceAttributes
+	for k, v := range new.Attributes {
+		if idx := sort.SearchStrings(s.builtinAttibutes, k); idx < len(s.builtinAttibutes) && s.builtinAttibutes[idx] == k {
+			continue
+		}
+		if len(k) > maxDeviceAttributeKeyLength {
+			return fmt.Errorf(`Attribute key "%s" exceeds maximum length (%d)`, k, maxDeviceAttributeKeyLength)
+		}
+		if len(v) > maxDeviceAttributeValueLength {
+			return fmt.Errorf(`Attribute value for key "%s" exceeds maximum length (%d)`, k, maxDeviceAttributeValueLength)
+		}
+		if customAttributeSlots < 1 {
+			return fmt.Errorf(`Maximum number of custom attributes (%d) exceeded`, maxDeviceAttributes)
+		}
+		customAttributeSlots--
+	}
+	err = s.store.Set(key, *new, properties...)
 	if err != nil {
 		return
 	}
-
+	if new.old == nil {
+		s.client.Del(s.listResultCacheKey(new.AppID), s.listResultCacheKey("_all_")).Err()
+	}
 	return nil
 }
 
 // Delete a Device
 func (s *RedisDeviceStore) Delete(appID, devID string) error {
 	key := fmt.Sprintf("%s:%s", appID, devID)
-	return s.store.Delete(key)
+	if err := s.queues.Delete(key); err != nil {
+		return err
+	}
+	err := s.store.Delete(key)
+	if err != nil {
+		return err
+	}
+	s.client.Del(s.listResultCacheKey(appID), s.listResultCacheKey("_all_")).Err()
+	return nil
+}
+
+// AddBuiltinAttribute adds builtin device attributes to the list.
+func (s *RedisDeviceStore) AddBuiltinAttribute(attr ...string) {
+	s.builtinAttibutes = append(s.builtinAttibutes, attr...)
+	sort.Strings(s.builtinAttibutes)
 }

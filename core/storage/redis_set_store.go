@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package storage
@@ -14,8 +14,7 @@ import (
 
 // RedisSetStore stores sets in Redis
 type RedisSetStore struct {
-	prefix string
-	client *redis.Client
+	*RedisStore
 }
 
 // NewRedisSetStore creates a new RedisSetStore
@@ -24,13 +23,16 @@ func NewRedisSetStore(client *redis.Client, prefix string) *RedisSetStore {
 		prefix += ":"
 	}
 	return &RedisSetStore{
-		client: client,
-		prefix: prefix,
+		RedisStore: NewRedisStore(client, prefix),
 	}
 }
 
 // GetAll returns all results for the given keys, prepending the prefix to the keys if necessary
 func (s *RedisSetStore) GetAll(keys []string, options *ListOptions) (map[string][]string, error) {
+	if len(keys) == 0 {
+		return map[string][]string{}, nil
+	}
+
 	for i, key := range keys {
 		if !strings.HasPrefix(key, s.prefix) {
 			keys[i] = s.prefix + key
@@ -40,6 +42,9 @@ func (s *RedisSetStore) GetAll(keys []string, options *ListOptions) (map[string]
 	sort.Strings(keys)
 
 	selectedKeys := selectKeys(keys, options)
+	if len(selectedKeys) == 0 {
+		return map[string][]string{}, nil
+	}
 
 	pipe := s.client.Pipeline()
 	defer pipe.Close()
@@ -69,19 +74,22 @@ func (s *RedisSetStore) GetAll(keys []string, options *ListOptions) (map[string]
 	return data, nil
 }
 
+// Count the number of items for the given key
+func (s *RedisSetStore) Count(key string) (int, error) {
+	if !strings.HasPrefix(key, s.prefix) {
+		key = s.prefix + key
+	}
+	res, err := s.client.SCard(key).Result()
+	return int(res), err
+}
+
 // List all results matching the selector, prepending the prefix to the selector if necessary
 func (s *RedisSetStore) List(selector string, options *ListOptions) (map[string][]string, error) {
-	if selector == "" {
-		selector = "*"
-	}
-	if !strings.HasPrefix(selector, s.prefix) {
-		selector = s.prefix + selector
-	}
-	keys, err := s.client.Keys(selector).Result()
+	allKeys, err := s.Keys(selector, options)
 	if err != nil {
 		return nil, err
 	}
-	return s.GetAll(keys, options)
+	return s.GetAll(allKeys, options)
 }
 
 // Get one result, prepending the prefix to the key if necessary
@@ -114,9 +122,9 @@ func (s *RedisSetStore) Add(key string, values ...string) error {
 	if !strings.HasPrefix(key, s.prefix) {
 		key = s.prefix + key
 	}
-	var valuesI []interface{}
-	for _, v := range values {
-		valuesI = append(valuesI, v)
+	valuesI := make([]interface{}, len(values))
+	for i, v := range values {
+		valuesI[i] = v
 	}
 	return s.client.SAdd(key, valuesI...).Err()
 }
@@ -126,17 +134,9 @@ func (s *RedisSetStore) Remove(key string, values ...string) error {
 	if !strings.HasPrefix(key, s.prefix) {
 		key = s.prefix + key
 	}
-	var valuesI []interface{}
-	for _, v := range values {
-		valuesI = append(valuesI, v)
+	valuesI := make([]interface{}, len(values))
+	for i, v := range values {
+		valuesI[i] = v
 	}
 	return s.client.SRem(key, valuesI...).Err()
-}
-
-// Delete the entire set
-func (s *RedisSetStore) Delete(key string) error {
-	if !strings.HasPrefix(key, s.prefix) {
-		key = s.prefix + key
-	}
-	return s.client.Del(key).Err()
 }

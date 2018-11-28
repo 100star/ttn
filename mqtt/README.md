@@ -1,8 +1,8 @@
 # API Reference
 
 * Host: `<Region>.thethings.network`, where `<Region>` is last part of the handler you registered your application to, e.g. `eu`.
-* Port: `1883` or `8883` for TLS
-* PEM encoded CA certificate for TLS: [mqtt-ca.pem](https://preview.console.thethingsnetwork.org/mqtt-ca.pem)
+* Port: `1883`, or `8883` for TLS
+* For TLS, the server uses a Let's Encrypt certificate. If your server does not trust that yet, you might want to include the [Let's Encrypt Roots](https://letsencrypt.org/certificates/) in your certificate chain. Alternatively you can use our PEM-encoded CA certificate, which includes those roots as well: [mqtt-ca.pem](https://console.thethingsnetwork.org/mqtt-ca.pem)
 * Username: Application ID
 * Password: Application Access Key
 
@@ -14,51 +14,74 @@
 
 ```js
 {
+  "app_id": "my-app-id",              // Same as in the topic
+  "dev_id": "my-dev-id",              // Same as in the topic
+  "hardware_serial": "0102030405060708", // In case of LoRaWAN: the DevEUI
   "port": 1,                          // LoRaWAN FPort
   "counter": 2,                       // LoRaWAN frame counter
+  "is_retry": false,                  // Is set to true if this message is a retry (you could also detect this from the counter)
+  "confirmed": false,                 // Is set to true if this message was a confirmed message
   "payload_raw": "AQIDBA==",          // Base64 encoded payload: [0x01, 0x02, 0x03, 0x04]
   "payload_fields": {},               // Object containing the results from the payload functions - left out when empty
   "metadata": {
+    "airtime": 46336000,              // Airtime in nanoseconds
     "time": "1970-01-01T00:00:00Z",   // Time when the server received the message
     "frequency": 868.1,               // Frequency at which the message was sent
-    "modulation": "LORA",             // Modulation that was used - currently only LORA. In the future we will support FSK as well
+    "modulation": "LORA",             // Modulation that was used - LORA or FSK
     "data_rate": "SF7BW125",          // Data rate that was used - if LORA modulation
     "bit_rate": 50000,                // Bit rate that was used - if FSK modulation
     "coding_rate": "4/5",             // Coding rate that was used
     "gateways": [
       {
-        "id": "ttn-herengracht-ams",    // EUI of the gateway
-        "timestamp": 12345,             // Timestamp when the gateway received the message
-        "time": "1970-01-01T00:00:00Z", // Time when the gateway received the message - left out when gateway does not have synchronized time 
-        "channel": 0,                   // Channel where the gateway received the message
-        "rssi": -25,                    // Signal strength of the received message
-        "snr": 5,                       // Signal to noise ratio of the received message
-        "rf_chain": 0,                  // RF chain where the gateway received the message
+        "gtw_id": "ttn-herengracht-ams", // EUI of the gateway
+        "timestamp": 12345,              // Timestamp when the gateway received the message
+        "time": "1970-01-01T00:00:00Z",  // Time when the gateway received the message - left out when gateway does not have synchronized time
+        "channel": 0,                    // Channel where the gateway received the message
+        "rssi": -25,                     // Signal strength of the received message
+        "snr": 5,                        // Signal to noise ratio of the received message
+        "rf_chain": 0,                   // RF chain where the gateway received the message
+        "latitude": 52.1234,             // Latitude of the gateway reported in its status updates
+        "longitude": 6.1234,             // Longitude of the gateway
+        "altitude": 6                    // Altitude of the gateway
       },
       //...more if received by more gateways...
-    ]
+    ],
+    "latitude": 52.2345,              // Latitude of the device
+    "longitude": 6.2345,              // Longitude of the device
+    "altitude": 2                     // Altitude of the device
   }
 }
 ```
 
-Note: Some values may be omitted if they are `null`, `""` or `0`.
+Note: Some values may be omitted if they are `null`, `false`, `""` or `0`.
 
-**Usage (Mosquitto):** `mosquitto_sub -h <Region>.thethings.network:1883 -d -t 'my-app-id/devices/my-dev-id/up'`
+**Usage (Mosquitto):** `mosquitto_sub -h <Region>.thethings.network -d -t 'my-app-id/devices/my-dev-id/up'`
 
 **Usage (Go client):**
 
 ```go
-ctx := log.WithField("Example", "Go Client")
-client := NewClient(ctx, "ttnctl", "my-app-id", "my-access-key", "<Region>.thethings.network:1883")
-if err := client.Connect(); err != nil {
-  ctx.WithError(err).Fatal("Could not connect")
-}
-token := client.SubscribeDeviceUplink("my-app-id", "my-dev-id", func(client Client, appID string, devID string, req types.UplinkMessage) {
-  // Do something with the uplink message
-})
-token.Wait()
-if err := token.Error(); err != nil {
-  ctx.WithError(err).Fatal("Could not subscribe")
+import (
+	"github.com/TheThingsNetwork/go-utils/log"
+	"github.com/TheThingsNetwork/go-utils/log/apex"
+	"github.com/TheThingsNetwork/ttn/core/types"
+	"github.com/TheThingsNetwork/ttn/mqtt"
+)
+
+func main() {
+	ctx := apex.Stdout().WithField("Example", "Go Client")
+	log.Set(ctx)
+
+	client := mqtt.NewClient(ctx, "ttnctl", "my-app-id", "my-access-key", "<Region>.thethings.network:1883")
+	if err := client.Connect(); err != nil {
+		ctx.WithError(err).Fatal("Could not connect")
+	}
+	token := client.SubscribeDeviceUplink("my-app-id", "my-dev-id", func(client mqtt.Client, appID string, devID string, req types.UplinkMessage) {
+		// Do something with the uplink message
+	})
+	token.Wait()
+	if err := token.Error(); err != nil {
+		ctx.WithError(err).Fatal("Could not subscribe")
+	}
 }
 ```
 
@@ -98,20 +121,18 @@ you will see this on MQTT:
 ```js
 {
   "port": 1,                 // LoRaWAN FPort
+  "confirmed": false,        // Whether the downlink should be confirmed by the device
   "payload_raw": "AQIDBA==", // Base64 encoded payload: [0x01, 0x02, 0x03, 0x04]
 }
 ```
 
-**Usage (Mosquitto):** `mosquitto_pub -h <Region>.thethings.network:1883 -d -t 'my-app-id/devices/my-dev-id/down' -m '{"port":1,"payload_raw":"AQIDBA=="}'`
+**Usage (Mosquitto):** `mosquitto_pub -h <Region>.thethings.network -d -t 'my-app-id/devices/my-dev-id/down' -m '{"port":1,"payload_raw":"AQIDBA=="}'`
 
 **Usage (Go client):**
 
+_for setup, see **Uplink Messages**_
+
 ```go
-ctx := log.WithField("Example", "Go Client")
-client := NewClient(ctx, "ttnctl", "my-app-id", "my-access-key", "<Region>.thethings.network:1883")
-if err := client.Connect(); err != nil {
-  ctx.WithError(err).Fatal("Could not connect")
-}
 token := client.PublishDownlink(types.DownlinkMessage{
   AppID:   "my-app-id",
   DevID:   "my-dev-id",
@@ -133,22 +154,20 @@ Instead of `payload_raw` you can also use `payload_fields` with an object of fie
 ```js
 {
   "port": 1,                 // LoRaWAN FPort
+  "confirmed": false,        // Whether the downlink should be confirmed by the device
   "payload_fields": {
     "led": true
   }
 }
 ```
 
-**Usage (Mosquitto):** `mosquitto_pub -h <Region>.thethings.network:1883 -d -t 'my-app-id/devices/my-dev-id/down' -m '{"port":1,"payload_fields":{"led":true}}'`
+**Usage (Mosquitto):** `mosquitto_pub -h <Region>.thethings.network -d -t 'my-app-id/devices/my-dev-id/down' -m '{"port":1,"payload_fields":{"led":true}}'`
 
 **Usage (Go client):**
 
+_for setup, see **Uplink Messages**_
+
 ```go
-ctx := log.WithField("Example", "Go Client")
-client := NewClient(ctx, "ttnctl", "my-app-id", "my-access-key", "<Region>.thethings.network:1883")
-if err := client.Connect(); err != nil {
-  ctx.WithError(err).Fatal("Could not connect")
-}
 token := client.PublishDownlink(types.DownlinkMessage{
   AppID:   "my-app-id",
   DevID:   "my-dev-id",
@@ -160,6 +179,20 @@ token := client.PublishDownlink(types.DownlinkMessage{
 token.Wait()
 if err := token.Error(); err != nil {
   ctx.WithError(err).Fatal("Could not publish")
+}
+```
+
+### Downlink Scheduling
+
+By default, the downlink will _replace_ the currently scheduled downlink, if any. It is also possible to schedule the
+downlink as the _first_ or _last_ item in a the downlink queue.
+
+```js
+{
+  "port": 1,
+  "confirmed": false,
+  // payload_raw or payload_fields
+  "schedule": "replace", // allowed values: "replace" (default), "first", "last"
 }
 ```
 
@@ -180,16 +213,13 @@ if err := token.Error(); err != nil {
 }
 ```
 
-**Usage (Mosquitto):** `mosquitto_sub -h <Region>.thethings.network:1883 -d -t 'my-app-id/devices/my-dev-id/events/activations'`
+**Usage (Mosquitto):** `mosquitto_sub -h <Region>.thethings.network -d -t 'my-app-id/devices/my-dev-id/events/activations'`
 
 **Usage (Go client):**
 
+_for setup, see **Uplink Messages**_
+
 ```go
-ctx := log.WithField("Example", "Go Client")
-client := NewClient(ctx, "ttnctl", "my-app-id", "my-access-key", "<Region>.thethings.network:1883")
-if err := client.Connect(); err != nil {
-  ctx.WithError(err).Fatal("Could not connect")
-}
 token := client.SubscribeDeviceActivations("my-app-id", "my-dev-id", func(client Client, appID string, devID string, req Activation) {
   // Do something with the activation
 })
@@ -200,6 +230,12 @@ if err := token.Error(); err != nil {
 ```
 
 ## Device Events
+
+### Management Events
+
+**Created:** `<AppID>/devices/<DevID>/events/create`
+**Updated:** `<AppID>/devices/<DevID>/events/update`
+**Deleted:** `<AppID>/devices/<DevID>/events/delete`
 
 ### Downlink Events
 
@@ -215,6 +251,7 @@ payload: _null_
   "config": {
     "modulation": "LORA",
     "data_rate": "SF7BW125",
+    "airtime": 46336000,
     "counter": 123,
     "frequency": 868300000,
     "power": 14

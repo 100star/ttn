@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package types
@@ -90,6 +90,11 @@ func (n *DevNonce) Unmarshal(data []byte) error {
 	return n.UnmarshalBinary(data)
 }
 
+// Equal returns whether n is equal to other
+func (n DevNonce) Equal(other DevNonce) bool {
+	return n == other
+}
+
 // AppNonce for LoRaWAN
 type AppNonce [3]byte
 
@@ -159,6 +164,11 @@ func (n AppNonce) Marshal() ([]byte, error) {
 func (n *AppNonce) Unmarshal(data []byte) error {
 	*n = [3]byte{} // Reset the receiver
 	return n.UnmarshalBinary(data)
+}
+
+// Equal returns whether n is equal to other
+func (n AppNonce) Equal(other AppNonce) bool {
+	return n == other
 }
 
 // NetID for LoRaWAN
@@ -236,4 +246,9 @@ func (n NetID) Marshal() ([]byte, error) {
 func (n *NetID) Unmarshal(data []byte) error {
 	*n = [3]byte{} // Reset the receiver
 	return n.UnmarshalBinary(data)
+}
+
+// Equal returns whether n is equal to other
+func (n NetID) Equal(other NetID) bool {
+	return n == other
 }

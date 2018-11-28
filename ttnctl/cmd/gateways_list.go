@@ -1,4 +1,4 @@
-// Copyright © 2016 The Things Network
+// Copyright © 2017 The Things Network
 // Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 
 package cmd
@@ -21,6 +21,8 @@ var gatewaysListCmd = &cobra.Command{
 1	test	true		US				(52.3740, 4.8896)
 `,
 	Run: func(cmd *cobra.Command, args []string) {
+		assertArgsLength(cmd, args, 0, 0)
+
 		account := util.GetAccount(ctx)
 		gateways, err := account.ListGateways()
 		if err != nil {
@@ -33,11 +35,13 @@ var gatewaysListCmd = &cobra.Command{
 		for i, gateway := range gateways {
 			var lat float64
 			var lng float64
-			if gateway.Location != nil {
-				lat = gateway.Location.Latitude
-				lng = gateway.Location.Longitude
+			var alt int
+			if gateway.AntennaLocation != nil {
+				lat = gateway.AntennaLocation.Latitude
+				lng = gateway.AntennaLocation.Longitude
+				alt = gateway.AntennaLocation.Altitude
 			}
-			table.AddRow(i+1, gateway.ID, gateway.Activated, gateway.FrequencyPlan, fmt.Sprintf("(%f, %f)", lat, lng))
+			table.AddRow(i+1, gateway.ID, gateway.Activated, gateway.FrequencyPlan, fmt.Sprintf("(%f, %f, %d)", lat, lng, alt))
 		}
 
 		fmt.Println()
